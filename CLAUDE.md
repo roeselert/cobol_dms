@@ -37,8 +37,8 @@ up to date as the migration proceeds.
    programs never touch CGI variables directly.
 4. **Migrate the Python services to GNU COBOL too**, and integrate them **in-process
    (direct CALL), not as HTTP services**. The conversion toolchain keeps invoking the
-   same external CLI tools (ocrmypdf, gs, libreoffice, pdftotext); the extraction logic
-   (prompt assembly, response parsing) becomes COBOL.
+   same external CLI tools (ocrmypdf, gs, pdftotext — libreoffice drops out with
+   rule 8); the extraction logic (prompt assembly, response parsing) becomes COBOL.
 5. **VSAM-style storage, no SQLite.** All tables move to GnuCOBOL
    `ORGANIZATION IS INDEXED` files (VSAM KSDS equivalent) with primary and alternate
    record keys. No SQL anywhere. SQLite FTS5 has no VSAM equivalent — full-text search
@@ -49,7 +49,12 @@ up to date as the migration proceeds.
 7. **One flat source directory** (`src/`) for all COBOL sources and copybooks.
    **File names are max 12 characters** including extension. The naming syntax below
    encodes business-component ordering.
-8. **Iteration 1 is documentation only** — no code changes. Migration code starts in
+8. **PDF is the only accepted input format.** Uploads other than `application/pdf`
+   are rejected with 415 (deliberate simplification vs. the as-is system, which also
+   takes docx/images/eml). The conversion pipeline therefore needs no LibreOffice and
+   no image-OCR path — the toolchain is ocrmypdf (OCR + PDF/A) with a ghostscript
+   fallback, plus pdftotext.
+9. **Iteration 1 is documentation only** — no code changes. Migration code starts in
    later iterations.
 
 ## Source file naming convention
@@ -91,6 +96,8 @@ Examples: `00HTTPC0.cob` (CGI/HTTP layer), `00JSONC0.cob` (JSON parse/emit),
 - **CGI dispatcher** (`00HTTPC0`): routes `/api/v1/...` to boundary programs.
 - **Worker daemon** (`50JOBSW0`): long-running GnuCOBOL process polling the VSAM job
   queue file — replaces the Spring scheduler; same claim/lease/retry/backoff semantics.
+  Conversion tools invoked in-process: ocrmypdf, gs, pdftotext (PDF-only intake — no
+  libreoffice).
 - **Data**: VSAM indexed files under a data directory; original/PDF-A/text binaries in
   the filesystem object store (S3 support dropped or deferred — open decision).
 - **LLM**: libcurl from COBOL, provider config via environment
@@ -116,7 +123,9 @@ SONSTIGES), extraction intents with fields. Do not translate these in code or UI
 - Audit log survives user deletion (no FK); every access decision is auditable.
 - Feed tokens are stored hashed; RSS feed authenticates via token query parameter.
 - API error contract, status codes (400/403/404/409/413/415/422/502/503/504) and
-  `/api/v1` paths stay exactly as documented in `docs/ARCHITECTURE.md` §10.
+  `/api/v1` paths stay exactly as documented in `docs/ARCHITECTURE.md` §10 — with one
+  deliberate deviation: 415 fires for **every non-PDF upload** (PDF-only intake,
+  rule 8), not just for types outside the as-is accepted list.
 
 ## Working agreements
 

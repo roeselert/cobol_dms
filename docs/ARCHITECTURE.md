@@ -241,7 +241,8 @@ springdoc OpenAPI (`/v3/api-docs`, `/swagger-ui.html`).
 403 forbidden, 404 not found, 409 conflict (e.g. metadata version), 413 payload too
 large, 415 unsupported media type (accepted: pdf, docx, jpg/jpeg, png, tif/tiff, eml),
 422 unprocessable, 502 upstream AI error, 503 storage unavailable, 504 conversion
-timeout.
+timeout. *Migration decision (2026-07-17): the COBOL target accepts only PDF — every
+other type ⇒ 415; see [`TARGET-ARCHITECTURE.md`](TARGET-ARCHITECTURE.md).*
 
 ## 11. Risks / debt relevant to the migration
 
@@ -250,6 +251,9 @@ timeout.
 - Resilience, scheduling, multipart handling, OIDC validation are all framework
   features (Spring/resilience4j) that need explicit replacements.
 - S3 object store + SQLite-to-bucket backup are cloud-specific conveniences.
+- Multi-format intake (docx/images/eml via the LibreOffice and image-OCR paths of the
+  conversion service) is **dropped in the migration target** — PDF-only intake removes
+  the LibreOffice dependency and the image pipeline entirely.
 
 ## 12. Glossary
 

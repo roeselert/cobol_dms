@@ -18,7 +18,7 @@ graph TD
     Entities --> VSAM[(GnuCOBOL indexed files<br>VSAM KSDS style)]
     Controls --> Store[(Filesystem object store<br>originals · pdfa · text)]
     Worker([50JOBSW0 worker daemon]) -->|claim/lease| VSAM
-    Worker -->|CALL SYSTEM| Tools([ocrmypdf · gs · libreoffice · pdftotext])
+    Worker -->|CALL SYSTEM| Tools([ocrmypdf · gs · pdftotext])
     Worker -->|CALL| Curl([60CURLC0 libcurl wrapper])
     Curl -->|HTTPS| AI([OpenAI-compatible API])
     IdP([OIDC IdP]) -.->|mod_auth_openidc| Apache
@@ -79,7 +79,7 @@ Flat `src/`, names per the `NNMMMMLS` convention in `CLAUDE.md`:
 | `50JOBSB0.cob` | `JobsController` |
 | `50JOBSE0.cob` | job queue file access (claim, lease, retry) |
 | `50JOBSW0.cob` | `JobDispatcher` + scheduler (daemon) |
-| `50CONVC0.cob` | Python conversion service: drives ocrmypdf/gs/libreoffice/pdftotext via `CALL "SYSTEM"`, temp files under the data dir |
+| `50CONVC0.cob` | Python conversion service, **PDF ladder only**: ocrmypdf → ghostscript → passthrough/fail via `CALL "SYSTEM"`, pdftotext for text, temp files under the data dir — no LibreOffice, no image path (PDF-only intake, D-8) |
 | `60EXTRC0.cob` | Python extraction service: prompt assembly from catalogs, response parsing, suggestion validation |
 | `60CURLC0.cob` | httpx: libcurl wrapper (`curl_easy_*` via `CALL`) |
 | `60INTSB0/E0`, `60ORDNB0/E0` | intent + Ordnungsbegriff catalog REST/files |
@@ -114,6 +114,11 @@ and unique constraints. Fixed-length records; timestamps stay epoch millis
 | `DOCCLASS` / `EXTRINT` / `EXTRINTF` / `ORDNTYPE` | id | name (unique; intent-id for fields) |
 | `FEEDTOKN` | id | token-hash (unique), user-id (dups) |
 | `AUDITLOG` | id | timestamp (dups) |
+
+**Intake rule (PDF-only, D-8)**: upload validation accepts exactly one MIME type —
+`application/pdf` (declared MIME or `.pdf` extension); everything else ⇒ 415. As a
+consequence `RENDTION.producer` values shrink to
+`upload | ocrmypdf | ghostscript | passthrough`.
 
 Rules carried over: `DOCORDNB.type-name` stays a snapshot (no referential check);
 `AUDITLOG.user-id` is never validated against `USERS`; optimistic `version` numbers on
@@ -153,15 +158,19 @@ store ⇒ 503 and no metadata, exactly as today. (S3 support: open decision D-2.
 
 ## 6. The migrated Python services
 
-- **Conversion (`50CONVC0`)**: same tool preference order and semantics as
-  `services/conversion/app/convert.py` — PDFs through ocrmypdf (OCR + PDF/A), fallback
-  ghostscript (`producer=ghostscript`), office/e-mail via libreoffice, images via
-  ocrmypdf; `pdftotext` for the text; `passthrough` when no toolchain; tool timeouts ⇒
-  job failure (worker retry), not 504 (the HTTP hop is gone — the 504 path remains only
-  in the API error table for parity of documented codes).
+- **Conversion (`50CONVC0`)**: only the PDF normalization ladder of
+  `services/conversion/app/convert.py` (`_normalize_pdf`) survives — ocrmypdf
+  (`--skip-text`, PDF/A output, `producer=ocrmypdf`), fallback ghostscript `-dPDFA=2`
+  (`producer=ghostscript`); toolchain present but file rejected (corrupt/encrypted
+  PDF) ⇒ job failure; no toolchain at all ⇒ `passthrough` with warning; `pdftotext`
+  for the text. The LibreOffice and image-OCR paths are **not migrated** (PDF-only
+  intake, D-8). Tool timeouts ⇒ job failure (worker retry), not 504 (the HTTP hop is
+  gone — the 504 path remains only in the API error table for parity of documented
+  codes).
 - **Extraction (`60EXTRC0` + `60CURLC0`)**: prompt built from the DB catalogs (classes,
   intents + fields, active Ordnungsbegriff types) exactly as `prompt.py`; document
-  transport modes `text` (default, 100 000-char cap) / `file` / image data-URL;
+  transport modes `text` (default, 100 000-char cap) or `file` (inline PDF) — the
+  image data-URL transport is dropped with PDF-only intake (D-8);
   `response_format: json_object`; parse + validate the model's JSON against the
   catalogs as `parsing.py` does. Unconfigured (`DMS_AI_TOKEN` empty) ⇒ skip ⇒
   `MANUAL_INDEXING`; transport/HTTP/parse errors ⇒ retry (3×, then give up for this
@@ -176,6 +185,8 @@ Keep `index.html`, `js/` views, `api.js` contract untouched except styling hooks
   accent, monospace stack (`"IBM Plex Mono", "Courier New", monospace`), block-cursor
   input styling, scanline/undecorated tables, high-contrast focus.
 - Stays **mobile-first**: existing off-canvas sidebar, responsive tables, touch targets.
+- Upload view: file picker restricted to PDF (`accept="application/pdf"`) — a
+  later-iteration tweak matching the PDF-only intake (D-8), listed here so it isn't lost.
 - Served by Apache as static files from the doc root (no Spring static handler).
 
 ## 8. Configuration (environment)
@@ -213,3 +224,4 @@ the parity checklist in `CLAUDE.md` gates every step.
 | D-5 | Circuit-breaker parity for the AI path: shared state file vs. per-worker counter | open |
 | D-6 | Health/readiness contract replacement for the Spring actuator | proposal in §8 |
 | D-7 | RSS XML generation: template copybook vs. string build | open |
+| D-8 | **PDF-only intake**: only `application/pdf` accepted (415 otherwise); LibreOffice and the image-OCR path are out of migration scope | **decided 2026-07-17** |
