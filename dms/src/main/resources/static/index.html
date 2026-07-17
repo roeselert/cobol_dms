@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloud DMS</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+
+  <div id="signin-overlay" class="overlay hidden">
+    <form id="signin-form" class="signin-card">
+      <div class="brand-mark">▤</div>
+      <h1>Cloud DMS</h1>
+      <p class="muted">Sign in with your email address.</p>
+      <input type="email" id="signin-email" placeholder="you@example.com" required autofocus>
+      <button type="submit" class="primary">Sign in</button>
+      <p class="muted small">Development mode — identity travels as the
+        <code>X-Dev-User</code> header. Production uses OIDC single sign-on.</p>
+    </form>
+  </div>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">▤</span> Cloud DMS</div>
+      <nav id="nav">
+        <button data-view="documents" class="active" type="button"><span>▣</span> Documents</button>
+        <button data-view="upload" type="button"><span>⇪</span> Upload</button>
+        <button data-view="search" type="button"><span>⌕</span> Search</button>
+        <button data-view="akten" type="button"><span>🗀</span> Akten</button>
+        <button data-view="jobs" type="button"><span>⏱</span> Job Queue</button>
+        <button data-view="admin" type="button"><span>⚙</span> Administration</button>
+        <button data-view="feed" type="button"><span>◈</span> RSS Feed</button>
+      </nav>
+      <div class="user-card">
+        <div>
+          <div id="user-email" class="user-email"></div>
+          <div id="user-role" class="muted small"></div>
+        </div>
+        <button id="switch-user" type="button" class="ghost small-btn" title="Switch user">⇄</button>
+      </div>
+    </aside>
+    <div id="sidebar-backdrop" hidden></div>
+
+    <main>
+      <header class="topbar">
+        <button id="nav-toggle" type="button" class="ghost" aria-label="Menu"
+                aria-controls="nav" aria-expanded="false">☰</button>
+        <h2 id="view-title">Documents</h2>
+        <div id="view-actions"></div>
+      </header>
+      <div id="view-root"></div>
+    </main>
+  </div>
+
+  <dialog id="modal"><div id="modal-body"></div></dialog>
+  <div id="toasts"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

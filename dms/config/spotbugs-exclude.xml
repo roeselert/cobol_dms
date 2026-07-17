@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs / FindSecBugs suppressions. Every entry documents WHY the finding
+  is acceptable — new suppressions need the same justification, scoped as
+  narrowly as possible (class + pattern, never blanket).
+-->
+<FindBugsFilter>
+
+  <!-- Spring constructor injection stores framework singletons by reference;
+       exposing/storing these is the DI pattern, not a mutability defect. -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+  </Match>
+
+  <!-- RSS output: every dynamic value passes through escape() immediately
+       before being appended; the analyzer cannot follow the taint through
+       the local helper. -->
+  <Match>
+    <Class name="de.dms.feeds.boundary.FeedsController"/>
+    <Bug pattern="POTENTIAL_XML_INJECTION"/>
+  </Match>
+
+  <!-- Conversion tool invocation: executables are hard-coded, the only
+       variable argument is a filename sanitized to [A-Za-z0-9._-] inside a
+       per-job scratch directory (see sanitize()). -->
+  <Match>
+    <Class name="de.dms.conversion.control.PdfaConversion"/>
+    <Bug pattern="COMMAND_INJECTION"/>
+  </Match>
+
+  <!-- PDF text extraction for AI transport: executables are hard-coded and
+       the arguments are constant scratch filenames (in.pdf/out.txt) inside a
+       per-job temp directory — no user-controlled data reaches the command
+       line; the analyzer taints the configured data-dir path. -->
+  <Match>
+    <Class name="de.dms.aiextraction.control.PdfTransport"/>
+    <Bug pattern="COMMAND_INJECTION"/>
+  </Match>
+
+  <!-- Stateless bearer-token API without session cookies: CSRF does not
+       apply (S-2 design, §11); disabling it is the standard resource-server
+       configuration. -->
+  <Match>
+    <Class name="de.dms.crosscutting.security.boundary.SecurityConfig"/>
+    <Bug pattern="SPRING_CSRF_PROTECTION_DISABLED"/>
+  </Match>
+
+</FindBugsFilter>

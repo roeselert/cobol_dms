@@ -1,0 +1,50 @@
+# Full local/CI stack: the Java app plus its two Python document services.
+# In production each container runs in its own Hugging Face Space; the shared
+# service token then comes from Space Secrets instead of the dev default.
+#
+#   docker compose up --build          # app on http://localhost:7860 (dev auth)
+#   DMS_AI_TOKEN=sk-... docker compose up --build   # with real AI extraction
+
+services:
+  conversion:
+    build: services/conversion
+    environment:
+      - DMS_SERVICE_TOKEN=${DMS_SERVICES_TOKEN:-dev-token}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:7860/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  extraction:
+    build: services/extraction
+    environment:
+      - DMS_SERVICE_TOKEN=${DMS_SERVICES_TOKEN:-dev-token}
+      # blank token -> the service answers status=unconfigured and the stack
+      # still works; documents are flagged for manual indexing
+      - DMS_AI_URL=${DMS_AI_URL:-https://api.openai.com/v1}
+      - DMS_AI_TOKEN=${DMS_AI_TOKEN:-}
+      - DMS_AI_MODEL=${DMS_AI_MODEL:-gpt-5-mini}
+      - DMS_AI_DOCUMENT_MODE=${DMS_AI_DOCUMENT_MODE:-text}
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:7860/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  dms:
+    build: dms
+    ports:
+      - "7860:7860"
+    environment:
+      - DMS_SECURITY_MODE=dev
+      - DMS_CONVERSION_URL=http://conversion:7860
+      - DMS_EXTRACTION_URL=http://extraction:7860
+      - DMS_SERVICES_TOKEN=${DMS_SERVICES_TOKEN:-dev-token}
+    depends_on:
+      conversion:
+        condition: service_healthy
+      extraction:
+        condition: service_healthy
