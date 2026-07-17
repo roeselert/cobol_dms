@@ -1,0 +1,101 @@
+>>SOURCE FORMAT FREE
+*> 20USRSE0 — organization: file access for the USERS indexed file
+*> (dms_user table). Ops:
+*>   GET  read by id      EML  read by email (unique alternate key)
+*>   WRT  write new       REW  rewrite
+*> L-RET: 00 ok · 23 not found · 22 duplicate key · 9x file error.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20USRSE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT USERS-FILE ASSIGN TO "USERS"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS US-ID
+        ALTERNATE RECORD KEY IS US-EMAIL
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD USERS-FILE.
+COPY "20USRSR0.cpy" REPLACING ==:PFX:== BY ==US==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "20USRSR0.cpy" REPLACING ==:PFX:== BY ==L-US==.
+PROCEDURE DIVISION USING L-OP L-RET L-US-REC.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "EML " PERFORM DO-BY-EMAIL
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "REW " PERFORM DO-REWRITE
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE USERS-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O USERS-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT USERS-FILE
+        CLOSE USERS-FILE
+        OPEN I-O USERS-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-US-ID TO US-ID
+    READ USERS-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE US-REC TO L-US-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-BY-EMAIL.
+    MOVE L-US-EMAIL TO US-EMAIL
+    READ USERS-FILE KEY IS US-EMAIL
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE US-REC TO L-US-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-WRITE.
+    MOVE L-US-REC TO US-REC
+    WRITE US-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-REWRITE.
+    MOVE L-US-ID TO US-ID
+    READ USERS-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        MOVE L-US-REC TO US-REC
+        REWRITE US-REC
+        IF WS-FS = "00" OR WS-FS = "02"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+END PROGRAM "20USRSE0".

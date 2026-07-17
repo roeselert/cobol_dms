@@ -1,0 +1,86 @@
+>>SOURCE FORMAT FREE
+*> 20USRSB0 — organization: REST boundary for /api/v1/users/me,
+*> mirroring UsersController: the caller's identity, memberships and
+*> whether they administer anything (bootstrap or any ADMIN grant).
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20USRSB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "20MEMBR0.cpy" REPLACING ==:PFX:== BY ==WS-MB==.
+01 WS-MB-TABLE.
+   05 WS-MB-COUNT       PIC 9(4).
+   05 WS-MB-ROW OCCURS 300.
+      10 WS-MB-ROW-ID   PIC X(36).
+      10 WS-MB-ROW-USER PIC X(36).
+      10 WS-MB-ROW-ORG  PIC X(36).
+      10 WS-MB-ROW-ROLE PIC X(10).
+01 WS-ADMIN             PIC X.
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-FIRST             PIC X.
+01 WS-I                 PIC 9(4) COMP.
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    IF HX-METHOD NOT = "GET"
+        MOVE 405 TO HX-STATUS
+        MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+        GOBACK
+    END-IF
+    MOVE SPACES TO WS-MB-REC
+    MOVE HX-USER-ID TO WS-MB-USER
+    MOVE "USR " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    MOVE HX-USER-ADMIN TO WS-ADMIN
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-MB-COUNT
+        IF WS-MB-ROW-ROLE (WS-I) = "ADMIN"
+            MOVE "Y" TO WS-ADMIN
+        END-IF
+    END-PERFORM
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    MOVE HX-USER-EMAIL TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"id":"' FUNCTION TRIM (HX-USER-ID)
+           '","email":"' WS-ESC-OUT (1 : WS-ESC-LEN)
+           '","admin":'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-ADMIN = "Y"
+        STRING "true" DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        STRING "false" DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-IF
+    STRING ',"memberships":[' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE "Y" TO WS-FIRST
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-MB-COUNT
+        IF WS-FIRST = "N"
+            STRING "," DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        END-IF
+        MOVE "N" TO WS-FIRST
+        STRING '{"orgUnitId":"'
+               FUNCTION TRIM (WS-MB-ROW-ORG (WS-I))
+               '","role":"'
+               FUNCTION TRIM (WS-MB-ROW-ROLE (WS-I)) '"}'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-PERFORM
+    STRING "]}" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS
+    GOBACK.
+END PROGRAM "20USRSB0".

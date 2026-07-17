@@ -1,0 +1,298 @@
+>>SOURCE FORMAT FREE
+*> 20ORGSB0 — organization: REST boundary for /api/v1/orgs, mirroring
+*> OrgsController. Speaks only the HTTP exchange copybook — no CGI.
+*>   GET    /v1/orgs           list units visible to the caller
+*>   POST   /v1/orgs           create (root units: bootstrap admins only)
+*>   PUT    /v1/orgs/{id}      rename and/or move
+*>   DELETE /v1/orgs/{id}      delete (requires ADMIN)
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20ORGSB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==WS-OU==.
+01 WS-OU-TABLE.
+   05 WS-OU-COUNT       PIC 9(4).
+   05 WS-OU-ROW OCCURS 300.
+      10 WS-OU-ROW-ID     PIC X(36).
+      10 WS-OU-ROW-NAME   PIC X(200).
+      10 WS-OU-ROW-PARENT PIC X(36).
+      10 WS-OU-ROW-PATH   PIC X(512).
+*> control interface (20ORGSC0)
+01 WS-C-OP              PIC X(4).
+01 WS-C-STATUS          PIC X(3).
+01 WS-C-MSG             PIC X(120).
+01 WS-C-NAME            PIC X(200).
+01 WS-C-PARENT          PIC X(36).
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==WS-COU==.
+*> authorization interface (10AUTHC0)
+01 WS-A-USER            PIC X(36).
+01 WS-A-ADMIN           PIC X.
+01 WS-A-ORG             PIC X(36).
+01 WS-A-NEEDED          PIC X.
+01 WS-A-ACTION          PIC X(10).
+01 WS-A-RTYPE           PIC X(20).
+01 WS-A-AUDIT           PIC X.
+01 WS-A-RESULT          PIC X.
+*> JSON in/out helpers
+01 WS-KEY               PIC X(64).
+01 WS-NAME-VAL          PIC X(512).
+01 WS-NAME-FOUND        PIC X.
+01 WS-PARENT-VAL        PIC X(512).
+01 WS-PARENT-FOUND      PIC X.
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-FIRST             PIC X.
+01 WS-I                 PIC 9(4) COMP.
+*> DTO scratch
+01 WS-DTO-ID            PIC X(36).
+01 WS-DTO-NAME          PIC X(200).
+01 WS-DTO-PARENT        PIC X(36).
+01 WS-DTO-PATH          PIC X(512).
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    EVALUATE TRUE
+        WHEN HX-METHOD = "GET" AND HX-SEG (3) = SPACES
+            PERFORM DO-LIST
+        WHEN HX-METHOD = "POST" AND HX-SEG (3) = SPACES
+            PERFORM DO-CREATE
+        WHEN HX-METHOD = "PUT" AND HX-SEG (3) NOT = SPACES
+                AND HX-SEG (4) = SPACES
+            PERFORM DO-UPDATE
+        WHEN HX-METHOD = "DELETE" AND HX-SEG (3) NOT = SPACES
+                AND HX-SEG (4) = SPACES
+            PERFORM DO-DELETE
+        WHEN OTHER
+            MOVE 405 TO HX-STATUS
+            MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+    END-EVALUATE
+    GOBACK.
+
+DO-LIST.
+    MOVE "ALL " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET WS-OU-REC WS-OU-TABLE
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    STRING "[" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE "Y" TO WS-FIRST
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-OU-COUNT
+        PERFORM CHECK-VISIBLE
+        IF WS-A-RESULT = "A"
+            IF WS-FIRST = "N"
+                STRING "," DELIMITED BY SIZE
+                    INTO HX-RESPONSE WITH POINTER WS-PTR
+                END-STRING
+            END-IF
+            MOVE "N" TO WS-FIRST
+            MOVE WS-OU-ROW-ID (WS-I)     TO WS-DTO-ID
+            MOVE WS-OU-ROW-NAME (WS-I)   TO WS-DTO-NAME
+            MOVE WS-OU-ROW-PARENT (WS-I) TO WS-DTO-PARENT
+            MOVE WS-OU-ROW-PATH (WS-I)   TO WS-DTO-PATH
+            PERFORM EMIT-ORG-DTO
+        END-IF
+    END-PERFORM
+    STRING "]" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS.
+
+CHECK-VISIBLE.
+    *> list filtering mirrors visibleOrgUnitIds(): no audit entries
+    IF HX-USER-ADMIN = "Y"
+        MOVE "A" TO WS-A-RESULT
+    ELSE
+        MOVE HX-USER-ID TO WS-A-USER
+        MOVE HX-USER-ADMIN TO WS-A-ADMIN
+        MOVE WS-OU-ROW-ID (WS-I) TO WS-A-ORG
+        MOVE "V" TO WS-A-NEEDED
+        MOVE "READ" TO WS-A-ACTION
+        MOVE "orgUnit" TO WS-A-RTYPE
+        MOVE "N" TO WS-A-AUDIT
+        CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG
+            WS-A-NEEDED WS-A-ACTION WS-A-RTYPE WS-A-AUDIT
+            WS-A-RESULT
+    END-IF.
+
+DO-CREATE.
+    MOVE "name" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-NAME-VAL WS-NAME-FOUND
+    MOVE "parentId" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-PARENT-VAL
+                          WS-PARENT-FOUND
+    IF WS-PARENT-FOUND NOT = "Y"
+            OR FUNCTION TRIM (WS-PARENT-VAL) = SPACES
+        *> creating a top-level unit is reserved for bootstrap admins
+        IF HX-USER-ADMIN NOT = "Y"
+            MOVE 403 TO HX-STATUS
+            MOVE '{"error":"only bootstrap admins may create root un' &
+                 'its"}' TO HX-RESPONSE
+            EXIT PARAGRAPH
+        END-IF
+        MOVE SPACES TO WS-C-PARENT
+    ELSE
+        MOVE WS-PARENT-VAL (1 : 36) TO WS-A-ORG
+        MOVE "A" TO WS-A-NEEDED
+        MOVE "WRITE" TO WS-A-ACTION
+        PERFORM REQUIRE-AUTH
+        IF WS-A-RESULT NOT = "A"
+            EXIT PARAGRAPH
+        END-IF
+        MOVE WS-PARENT-VAL (1 : 36) TO WS-C-PARENT
+    END-IF
+    MOVE WS-NAME-VAL (1 : 200) TO WS-C-NAME
+    IF WS-NAME-FOUND NOT = "Y"
+        MOVE SPACES TO WS-C-NAME
+    END-IF
+    MOVE "CREA" TO WS-C-OP
+    CALL "20ORGSC0" USING WS-C-OP WS-C-STATUS WS-C-MSG
+                          WS-C-NAME WS-C-PARENT WS-COU-REC
+    IF WS-C-STATUS = "201"
+        MOVE 201 TO HX-STATUS
+        PERFORM EMIT-SINGLE-DTO
+    ELSE
+        PERFORM EMIT-CONTROL-ERROR
+    END-IF.
+
+DO-UPDATE.
+    MOVE HX-SEG (3) (1 : 36) TO WS-A-ORG
+    MOVE "A" TO WS-A-NEEDED
+    MOVE "WRITE" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-COU-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-COU-ID
+    MOVE "REQG" TO WS-C-OP
+    CALL "20ORGSC0" USING WS-C-OP WS-C-STATUS WS-C-MSG
+                          WS-C-NAME WS-C-PARENT WS-COU-REC
+    IF WS-C-STATUS NOT = "200"
+        PERFORM EMIT-CONTROL-ERROR
+        EXIT PARAGRAPH
+    END-IF
+    MOVE "name" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-NAME-VAL WS-NAME-FOUND
+    IF WS-NAME-FOUND = "Y"
+            AND FUNCTION TRIM (WS-NAME-VAL) NOT = SPACES
+        MOVE WS-NAME-VAL (1 : 200) TO WS-C-NAME
+        MOVE "RENA" TO WS-C-OP
+        CALL "20ORGSC0" USING WS-C-OP WS-C-STATUS WS-C-MSG
+                              WS-C-NAME WS-C-PARENT WS-COU-REC
+        IF WS-C-STATUS NOT = "200"
+            PERFORM EMIT-CONTROL-ERROR
+            EXIT PARAGRAPH
+        END-IF
+    END-IF
+    MOVE "parentId" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-PARENT-VAL
+                          WS-PARENT-FOUND
+    IF WS-PARENT-FOUND = "Y"
+            AND FUNCTION TRIM (WS-PARENT-VAL) NOT = SPACES
+            AND WS-PARENT-VAL (1 : 36) NOT = WS-COU-PARENT
+        MOVE WS-PARENT-VAL (1 : 36) TO WS-A-ORG
+        MOVE "A" TO WS-A-NEEDED
+        MOVE "WRITE" TO WS-A-ACTION
+        PERFORM REQUIRE-AUTH
+        IF WS-A-RESULT NOT = "A"
+            EXIT PARAGRAPH
+        END-IF
+        MOVE WS-PARENT-VAL (1 : 36) TO WS-C-PARENT
+        MOVE "MOVE" TO WS-C-OP
+        CALL "20ORGSC0" USING WS-C-OP WS-C-STATUS WS-C-MSG
+                              WS-C-NAME WS-C-PARENT WS-COU-REC
+        IF WS-C-STATUS NOT = "200"
+            PERFORM EMIT-CONTROL-ERROR
+            EXIT PARAGRAPH
+        END-IF
+    END-IF
+    MOVE 200 TO HX-STATUS
+    PERFORM EMIT-SINGLE-DTO.
+
+DO-DELETE.
+    MOVE HX-SEG (3) (1 : 36) TO WS-A-ORG
+    MOVE "A" TO WS-A-NEEDED
+    MOVE "DELETE" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-COU-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-COU-ID
+    MOVE "DELE" TO WS-C-OP
+    CALL "20ORGSC0" USING WS-C-OP WS-C-STATUS WS-C-MSG
+                          WS-C-NAME WS-C-PARENT WS-COU-REC
+    IF WS-C-STATUS = "200"
+        MOVE 204 TO HX-STATUS
+        MOVE SPACES TO HX-RESPONSE
+    ELSE
+        PERFORM EMIT-CONTROL-ERROR
+    END-IF.
+
+REQUIRE-AUTH.
+    *> audited require*: N -> hidden 404, F -> 403 with the action name
+    MOVE HX-USER-ID TO WS-A-USER
+    MOVE HX-USER-ADMIN TO WS-A-ADMIN
+    MOVE "orgUnit" TO WS-A-RTYPE
+    MOVE "Y" TO WS-A-AUDIT
+    CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG
+        WS-A-NEEDED WS-A-ACTION WS-A-RTYPE WS-A-AUDIT WS-A-RESULT
+    EVALUATE WS-A-RESULT
+        WHEN "N"
+            MOVE 404 TO HX-STATUS
+            MOVE '{"error":"not found"}' TO HX-RESPONSE
+        WHEN "F"
+            MOVE 403 TO HX-STATUS
+            MOVE SPACES TO HX-RESPONSE
+            STRING '{"error":"insufficient role for '
+                   FUNCTION TRIM (WS-A-ACTION) '"}'
+                DELIMITED BY SIZE INTO HX-RESPONSE
+            END-STRING
+        WHEN OTHER
+            CONTINUE
+    END-EVALUATE.
+
+EMIT-CONTROL-ERROR.
+    MOVE WS-C-STATUS TO HX-STATUS
+    MOVE SPACES TO HX-RESPONSE
+    MOVE WS-C-MSG TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"error":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE
+    END-STRING.
+
+EMIT-SINGLE-DTO.
+    MOVE WS-COU-ID     TO WS-DTO-ID
+    MOVE WS-COU-NAME   TO WS-DTO-NAME
+    MOVE WS-COU-PARENT TO WS-DTO-PARENT
+    MOVE WS-COU-PATH   TO WS-DTO-PATH
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    PERFORM EMIT-ORG-DTO.
+
+EMIT-ORG-DTO.
+    MOVE WS-DTO-NAME TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"id":"' FUNCTION TRIM (WS-DTO-ID)
+           '","name":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF FUNCTION TRIM (WS-DTO-PARENT) = SPACES
+        STRING ',"parentId":null' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        STRING ',"parentId":"' FUNCTION TRIM (WS-DTO-PARENT) '"'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-IF
+    STRING ',"path":"' FUNCTION TRIM (WS-DTO-PATH) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+END PROGRAM "20ORGSB0".

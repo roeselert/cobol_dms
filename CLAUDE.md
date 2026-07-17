@@ -54,8 +54,9 @@ up to date as the migration proceeds.
    takes docx/images/eml). The conversion pipeline therefore needs no LibreOffice and
    no image-OCR path — the toolchain is ocrmypdf (OCR + PDF/A) with a ghostscript
    fallback, plus pdftotext.
-9. **Iteration 1 is documentation only** — no code changes. Migration code starts in
-   later iterations.
+9. **Iterations** (status in `docs/TARGET-ARCHITECTURE.md` §9): iteration 1 was
+   documentation only; iteration 2 (done) delivered the platform layer + the
+   organization BC slice behind Apache CGI, containerized and CI-smoked.
 
 ## Source file naming convention
 
@@ -126,6 +127,18 @@ SONSTIGES), extraction intents with fields. Do not translate these in code or UI
   `/api/v1` paths stay exactly as documented in `docs/ARCHITECTURE.md` §10 — with one
   deliberate deviation: 415 fires for **every non-PDF upload** (PDF-only intake,
   rule 8), not just for types outside the as-is accepted list.
+
+## Build, run & test (COBOL stack)
+
+- Compile locally: `cobc -x -free -I src -o dmsapi src/00HTTPC0.cob …` — the
+  authoritative file lists live in `cobol/Dockerfile` (CGI binary + `dmsboot`).
+- Container: `docker build -f cobol/Dockerfile -t dms-cobol .` (context = repo root),
+  `docker run -p 7861:7860 dms-cobol`; data volume `/data`, VSAM files in `/data/vsam`.
+- Smoke: `scripts/cobol-smoke.sh http://localhost:7861` (organization slice E2E).
+- CI: `.github/workflows/cobol-ci.yml` builds the image, **starts the container**,
+  waits for its healthcheck, smokes it, validates `compose.uat.yml`, and publishes
+  `ghcr.io/<owner>/clouddms/dms-cobol:latest` on main.
+- UAT: `compose.uat.yml` runs `dms-cobol` on :7861 next to the Java stack on :7860.
 
 ## Working agreements
 

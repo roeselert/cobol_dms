@@ -48,3 +48,21 @@ services:
         condition: service_healthy
       extraction:
         condition: service_healthy
+
+  # GNU COBOL migration stack (iteration 2 slice) on :7861 — build
+  # context is the repo root because the image compiles src/ and ships
+  # the shared static frontend
+  dms-cobol:
+    build:
+      context: .
+      dockerfile: cobol/Dockerfile
+    ports:
+      - "7861:7860"
+    environment:
+      - DMS_SECURITY_MODE=dev
+      - DMS_BOOTSTRAP_ADMINS=admin@example.com
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7860/api/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30

@@ -68,5 +68,28 @@ services:
       extraction:
         condition: service_healthy
 
+  # The GNU COBOL migration stack (iteration 2: platform layer +
+  # organization BC behind Apache/CGI). Runs alongside the Java stack
+  # on its own port + volume so both can be compared during migration.
+  # Image is published by .github/workflows/cobol-ci.yml on main.
+  dms-cobol:
+    image: ghcr.io/roeselert/clouddms/dms-cobol:latest
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "7861:7860"
+    environment:
+      - DMS_SECURITY_MODE=${DMS_SECURITY_MODE:-dev}
+      - DMS_BOOTSTRAP_ADMINS=${DMS_BOOTSTRAP_ADMINS:-admin@example.com}
+    volumes:
+      # VSAM indexed files under /data/vsam
+      - dms-cobol-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7860/api/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
 volumes:
   dms-data:
+  dms-cobol-data:

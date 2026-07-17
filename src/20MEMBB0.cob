@@ -1,0 +1,281 @@
+>>SOURCE FORMAT FREE
+*> 20MEMBB0 — organization: REST boundary for
+*> /api/v1/orgs/{orgUnitId}/members, mirroring MembersController and
+*> the Enrollment control.
+*>   GET    .../members                    list members (VIEWER)
+*>   POST   .../members                    assign {email, role} (ADMIN)
+*>   DELETE .../members/{membershipId}     revoke (ADMIN)
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20MEMBB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "20MEMBR0.cpy" REPLACING ==:PFX:== BY ==WS-MB==.
+01 WS-MB-TABLE.
+   05 WS-MB-COUNT       PIC 9(4).
+   05 WS-MB-ROW OCCURS 300.
+      10 WS-MB-ROW-ID   PIC X(36).
+      10 WS-MB-ROW-USER PIC X(36).
+      10 WS-MB-ROW-ORG  PIC X(36).
+      10 WS-MB-ROW-ROLE PIC X(10).
+COPY "20USRSR0.cpy" REPLACING ==:PFX:== BY ==WS-US==.
+*> control interface (20ORGSC0) for the org-unit existence check
+01 WS-C-OP              PIC X(4).
+01 WS-C-STATUS          PIC X(3).
+01 WS-C-MSG             PIC X(120).
+01 WS-C-NAME            PIC X(200).
+01 WS-C-PARENT          PIC X(36).
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==WS-COU==.
+*> authorization interface (10AUTHC0)
+01 WS-A-USER            PIC X(36).
+01 WS-A-ADMIN           PIC X.
+01 WS-A-ORG             PIC X(36).
+01 WS-A-NEEDED          PIC X.
+01 WS-A-ACTION          PIC X(10).
+01 WS-A-RTYPE           PIC X(20).
+01 WS-A-AUDIT           PIC X.
+01 WS-A-RESULT          PIC X.
+*> JSON helpers
+01 WS-KEY               PIC X(64).
+01 WS-EMAIL-VAL         PIC X(512).
+01 WS-EMAIL-FOUND       PIC X.
+01 WS-ROLE-VAL          PIC X(512).
+01 WS-ROLE-FOUND        PIC X.
+01 WS-ROLE              PIC X(10).
+01 WS-EMAIL             PIC X(200).
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-FIRST             PIC X.
+01 WS-I                 PIC 9(4) COMP.
+01 WS-UUID              PIC X(36).
+01 WS-EPOCH             PIC 9(13).
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    EVALUATE TRUE
+        WHEN HX-METHOD = "GET" AND HX-SEG (5) = SPACES
+            PERFORM DO-LIST
+        WHEN HX-METHOD = "POST" AND HX-SEG (5) = SPACES
+            PERFORM DO-ASSIGN
+        WHEN HX-METHOD = "DELETE" AND HX-SEG (5) NOT = SPACES
+            PERFORM DO-REMOVE
+        WHEN OTHER
+            MOVE 405 TO HX-STATUS
+            MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+    END-EVALUATE
+    GOBACK.
+
+DO-LIST.
+    MOVE "V" TO WS-A-NEEDED
+    MOVE "READ" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM REQUIRE-ORG
+    IF WS-C-STATUS NOT = "200"
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-MB-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-MB-ORG
+    MOVE "ORG " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    STRING "[" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE "Y" TO WS-FIRST
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-MB-COUNT
+        IF WS-FIRST = "N"
+            STRING "," DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        END-IF
+        MOVE "N" TO WS-FIRST
+        PERFORM RESOLVE-EMAIL
+        PERFORM EMIT-MEMBER-DTO
+    END-PERFORM
+    STRING "]" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS.
+
+RESOLVE-EMAIL.
+    MOVE SPACES TO WS-US-REC
+    MOVE WS-MB-ROW-USER (WS-I) TO WS-US-ID
+    MOVE "GET " TO WS-OP
+    CALL "20USRSE0" USING WS-OP WS-RET WS-US-REC
+    IF WS-RET = "00"
+        MOVE WS-US-EMAIL TO WS-EMAIL
+    ELSE
+        MOVE "?" TO WS-EMAIL
+    END-IF.
+
+EMIT-MEMBER-DTO.
+    MOVE WS-EMAIL TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"membershipId":"'
+           FUNCTION TRIM (WS-MB-ROW-ID (WS-I))
+           '","email":"' WS-ESC-OUT (1 : WS-ESC-LEN)
+           '","role":"' FUNCTION TRIM (WS-MB-ROW-ROLE (WS-I)) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+
+DO-ASSIGN.
+    MOVE "A" TO WS-A-NEEDED
+    MOVE "WRITE" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    MOVE "email" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-EMAIL-VAL WS-EMAIL-FOUND
+    IF WS-EMAIL-FOUND NOT = "Y"
+            OR FUNCTION TRIM (WS-EMAIL-VAL) = SPACES
+        MOVE 422 TO HX-STATUS
+        MOVE '{"error":"email is required"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE "role" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-ROLE-VAL WS-ROLE-FOUND
+    IF WS-ROLE-FOUND NOT = "Y"
+            OR FUNCTION TRIM (WS-ROLE-VAL) = SPACES
+        MOVE 422 TO HX-STATUS
+        MOVE '{"error":"role is required"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE FUNCTION UPPER-CASE (FUNCTION TRIM (WS-ROLE-VAL))
+        TO WS-ROLE
+    IF WS-ROLE NOT = "ADMIN" AND WS-ROLE NOT = "EDITOR"
+            AND WS-ROLE NOT = "VIEWER"
+        MOVE 422 TO HX-STATUS
+        MOVE SPACES TO HX-RESPONSE
+        MOVE WS-ROLE-VAL (1 : 512) TO WS-ESC-IN
+        CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+        STRING '{"error":"unknown role: '
+               WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+            DELIMITED BY SIZE INTO HX-RESPONSE
+        END-STRING
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM REQUIRE-ORG
+    IF WS-C-STATUS NOT = "200"
+        EXIT PARAGRAPH
+    END-IF
+    *> find or invite the user (Enrollment.assign)
+    MOVE FUNCTION LOWER-CASE (FUNCTION TRIM (WS-EMAIL-VAL))
+        TO WS-EMAIL
+    MOVE SPACES TO WS-US-REC
+    MOVE WS-EMAIL TO WS-US-EMAIL
+    MOVE "EML " TO WS-OP
+    CALL "20USRSE0" USING WS-OP WS-RET WS-US-REC
+    IF WS-RET = "23"
+        CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+        MOVE SPACES TO WS-US-REC
+        MOVE WS-UUID TO WS-US-ID
+        MOVE WS-EMAIL TO WS-US-EMAIL
+        MOVE "INVITED" TO WS-US-STATUS
+        MOVE "WRT " TO WS-OP
+        CALL "20USRSE0" USING WS-OP WS-RET WS-US-REC
+    END-IF
+    *> uniqueness: one membership per user+org (409, not 500, on race)
+    MOVE SPACES TO WS-MB-REC
+    MOVE WS-US-ID TO WS-MB-USER
+    MOVE HX-SEG (3) (1 : 36) TO WS-MB-ORG
+    MOVE "UOG " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    IF WS-RET = "00"
+        PERFORM EMIT-ALREADY-MEMBER
+        EXIT PARAGRAPH
+    END-IF
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE SPACES TO WS-MB-REC
+    MOVE WS-UUID TO WS-MB-ID
+    MOVE WS-US-ID TO WS-MB-USER
+    MOVE HX-SEG (3) (1 : 36) TO WS-MB-ORG
+    MOVE WS-ROLE TO WS-MB-ROLE
+    MOVE "WRT " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    IF WS-RET = "22"
+        PERFORM EMIT-ALREADY-MEMBER
+        EXIT PARAGRAPH
+    END-IF
+    MOVE 201 TO HX-STATUS
+    MOVE SPACES TO HX-RESPONSE
+    MOVE WS-EMAIL TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"membershipId":"' FUNCTION TRIM (WS-MB-ID)
+           '","email":"' WS-ESC-OUT (1 : WS-ESC-LEN)
+           '","role":"' FUNCTION TRIM (WS-ROLE) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE
+    END-STRING.
+
+EMIT-ALREADY-MEMBER.
+    MOVE 409 TO HX-STATUS
+    MOVE '{"error":"user is already a member of this unit"}'
+        TO HX-RESPONSE.
+
+DO-REMOVE.
+    MOVE "A" TO WS-A-NEEDED
+    MOVE "WRITE" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    *> wrong id or wrong unit is uniformly 404 (existence-hiding)
+    MOVE SPACES TO WS-MB-REC
+    MOVE HX-SEG (5) (1 : 36) TO WS-MB-ID
+    MOVE "GET " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    IF WS-RET NOT = "00"
+            OR WS-MB-ORG NOT = HX-SEG (3) (1 : 36)
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE "DEL " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    MOVE 204 TO HX-STATUS
+    MOVE SPACES TO HX-RESPONSE.
+
+REQUIRE-AUTH.
+    MOVE HX-USER-ID TO WS-A-USER
+    MOVE HX-USER-ADMIN TO WS-A-ADMIN
+    MOVE HX-SEG (3) (1 : 36) TO WS-A-ORG
+    MOVE "orgUnit" TO WS-A-RTYPE
+    MOVE "Y" TO WS-A-AUDIT
+    CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG
+        WS-A-NEEDED WS-A-ACTION WS-A-RTYPE WS-A-AUDIT WS-A-RESULT
+    EVALUATE WS-A-RESULT
+        WHEN "N"
+            MOVE 404 TO HX-STATUS
+            MOVE '{"error":"not found"}' TO HX-RESPONSE
+        WHEN "F"
+            MOVE 403 TO HX-STATUS
+            MOVE SPACES TO HX-RESPONSE
+            STRING '{"error":"insufficient role for '
+                   FUNCTION TRIM (WS-A-ACTION) '"}'
+                DELIMITED BY SIZE INTO HX-RESPONSE
+            END-STRING
+        WHEN OTHER
+            CONTINUE
+    END-EVALUATE.
+
+REQUIRE-ORG.
+    *> bootstrap admins skip the role check, so the unit's existence
+    *> still has to be verified (mirrors enrollment/hierarchy.require)
+    MOVE SPACES TO WS-COU-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-COU-ID
+    MOVE "REQG" TO WS-C-OP
+    CALL "20ORGSC0" USING WS-C-OP WS-C-STATUS WS-C-MSG
+                          WS-C-NAME WS-C-PARENT WS-COU-REC
+    IF WS-C-STATUS NOT = "200"
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+    END-IF.
+END PROGRAM "20MEMBB0".

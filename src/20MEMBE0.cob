@@ -1,0 +1,155 @@
+>>SOURCE FORMAT FREE
+*> 20MEMBE0 — organization: file access for the MEMBER indexed file
+*> (membership table). Ops:
+*>   GET  read by id                UOG  read by user+org (unique)
+*>   USR  all for a user (table)    ORG  all for an org unit (table)
+*>   WRT  write new                 DEL  delete by id
+*> L-RET: 00 ok · 23 not found · 22 duplicate key · 9x file error.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20MEMBE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT MEMBER-FILE ASSIGN TO "MEMBER"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS MB-ID
+        ALTERNATE RECORD KEY IS MB-USERORG
+        ALTERNATE RECORD KEY IS MB-USER WITH DUPLICATES
+        ALTERNATE RECORD KEY IS MB-ORG WITH DUPLICATES
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD MEMBER-FILE.
+COPY "20MEMBR0.cpy" REPLACING ==:PFX:== BY ==MB==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "20MEMBR0.cpy" REPLACING ==:PFX:== BY ==L-MB==.
+01 L-MB-TABLE.
+   05 L-MB-COUNT        PIC 9(4).
+   05 L-MB-ROW OCCURS 300.
+      10 L-MB-ROW-ID    PIC X(36).
+      10 L-MB-ROW-USER  PIC X(36).
+      10 L-MB-ROW-ORG   PIC X(36).
+      10 L-MB-ROW-ROLE  PIC X(10).
+PROCEDURE DIVISION USING L-OP L-RET L-MB-REC L-MB-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "UOG " PERFORM DO-BY-USER-ORG
+        WHEN "USR " PERFORM DO-BY-USER
+        WHEN "ORG " PERFORM DO-BY-ORG
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "DEL " PERFORM DO-DELETE
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE MEMBER-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O MEMBER-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT MEMBER-FILE
+        CLOSE MEMBER-FILE
+        OPEN I-O MEMBER-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-MB-ID TO MB-ID
+    READ MEMBER-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE MB-REC TO L-MB-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-BY-USER-ORG.
+    MOVE L-MB-USERORG TO MB-USERORG
+    READ MEMBER-FILE KEY IS MB-USERORG
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE MB-REC TO L-MB-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-BY-USER.
+    MOVE 0 TO L-MB-COUNT
+    MOVE L-MB-USER TO MB-USER
+    START MEMBER-FILE KEY IS = MB-USER
+    IF WS-FS = "00"
+        PERFORM UNTIL L-MB-COUNT >= 300
+            READ MEMBER-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            IF MB-USER NOT = L-MB-USER
+                EXIT PERFORM
+            END-IF
+            PERFORM ADD-ROW
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+
+DO-BY-ORG.
+    MOVE 0 TO L-MB-COUNT
+    MOVE L-MB-ORG TO MB-ORG
+    START MEMBER-FILE KEY IS = MB-ORG
+    IF WS-FS = "00"
+        PERFORM UNTIL L-MB-COUNT >= 300
+            READ MEMBER-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            IF MB-ORG NOT = L-MB-ORG
+                EXIT PERFORM
+            END-IF
+            PERFORM ADD-ROW
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+
+ADD-ROW.
+    ADD 1 TO L-MB-COUNT
+    MOVE MB-ID   TO L-MB-ROW-ID (L-MB-COUNT)
+    MOVE MB-USER TO L-MB-ROW-USER (L-MB-COUNT)
+    MOVE MB-ORG  TO L-MB-ROW-ORG (L-MB-COUNT)
+    MOVE MB-ROLE TO L-MB-ROW-ROLE (L-MB-COUNT).
+
+DO-WRITE.
+    MOVE L-MB-REC TO MB-REC
+    WRITE MB-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-DELETE.
+    MOVE L-MB-ID TO MB-ID
+    READ MEMBER-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        DELETE MEMBER-FILE
+        IF WS-FS = "00"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+END PROGRAM "20MEMBE0".

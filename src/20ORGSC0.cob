@@ -1,0 +1,224 @@
+>>SOURCE FORMAT FREE
+*> 20ORGSC0 — organization: hierarchy control, mirroring Hierarchy.java.
+*> Maintains the cycle-free org tree and its materialized path.
+*> Ops (C-OP): CREA create · RENA rename · MOVE re-parent (rewrites the
+*> whole subtree's paths) · DELE delete (guards) · REQG read by id.
+*> C-STATUS is HTTP-shaped: 200/201/404/409/422; C-MSG carries the
+*> as-is error message verbatim (404 bodies always say "not found").
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20ORGSC0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==WS-OU==.
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==WS-PAR==.
+01 WS-OU-TABLE.
+   05 WS-OU-COUNT       PIC 9(4).
+   05 WS-OU-ROW OCCURS 300.
+      10 WS-OU-ROW-ID     PIC X(36).
+      10 WS-OU-ROW-NAME   PIC X(200).
+      10 WS-OU-ROW-PARENT PIC X(36).
+      10 WS-OU-ROW-PATH   PIC X(512).
+COPY "20MEMBR0.cpy" REPLACING ==:PFX:== BY ==WS-MB==.
+01 WS-MB-TABLE.
+   05 WS-MB-COUNT       PIC 9(4).
+   05 WS-MB-ROW OCCURS 300.
+      10 WS-MB-ROW-ID   PIC X(36).
+      10 WS-MB-ROW-USER PIC X(36).
+      10 WS-MB-ROW-ORG  PIC X(36).
+      10 WS-MB-ROW-ROLE PIC X(10).
+01 WS-UUID              PIC X(36).
+01 WS-EPOCH             PIC 9(13).
+01 WS-OLD-PREFIX        PIC X(512).
+01 WS-NEW-PREFIX        PIC X(512).
+01 WS-OLD-LEN           PIC 9(4) COMP.
+01 WS-NEW-LEN           PIC 9(4) COMP.
+01 WS-ROW-LEN           PIC 9(4) COMP.
+01 WS-UNIT-LEN          PIC 9(4) COMP.
+01 WS-PAR-LEN           PIC 9(4) COMP.
+01 WS-I                 PIC 9(4) COMP.
+LINKAGE SECTION.
+01 C-OP                 PIC X(4).
+01 C-STATUS             PIC X(3).
+01 C-MSG                PIC X(120).
+01 C-NAME               PIC X(200).
+01 C-PARENT             PIC X(36).
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==C-OU==.
+PROCEDURE DIVISION USING C-OP C-STATUS C-MSG C-NAME C-PARENT C-OU-REC.
+MAIN.
+    MOVE SPACES TO C-MSG
+    EVALUATE C-OP
+        WHEN "CREA" PERFORM DO-CREATE
+        WHEN "RENA" PERFORM DO-RENAME
+        WHEN "MOVE" PERFORM DO-MOVE
+        WHEN "DELE" PERFORM DO-DELETE
+        WHEN "REQG" PERFORM DO-REQUIRE
+        WHEN OTHER
+            MOVE "422" TO C-STATUS
+            MOVE "unknown operation" TO C-MSG
+    END-EVALUATE
+    GOBACK.
+
+DO-CREATE.
+    IF FUNCTION TRIM (C-NAME) = SPACES
+        MOVE "422" TO C-STATUS
+        MOVE "name is required" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-PAR-REC
+    IF FUNCTION TRIM (C-PARENT) NOT = SPACES
+        MOVE C-PARENT TO WS-PAR-ID
+        MOVE "GET " TO WS-OP
+        CALL "20ORGSE0" USING WS-OP WS-RET WS-PAR-REC WS-OU-TABLE
+        IF WS-RET NOT = "00"
+            MOVE "404" TO C-STATUS
+            MOVE "not found" TO C-MSG
+            EXIT PARAGRAPH
+        END-IF
+    END-IF
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE SPACES TO C-OU-REC
+    MOVE WS-UUID TO C-OU-ID
+    MOVE FUNCTION TRIM (C-NAME) TO C-OU-NAME
+    IF FUNCTION TRIM (C-PARENT) NOT = SPACES
+        MOVE C-PARENT TO C-OU-PARENT
+        MOVE FUNCTION STORED-CHAR-LENGTH (WS-PAR-PATH) TO WS-PAR-LEN
+        STRING WS-PAR-PATH (1 : WS-PAR-LEN) WS-UUID "/"
+            DELIMITED BY SIZE INTO C-OU-PATH
+        END-STRING
+    ELSE
+        STRING "/" WS-UUID "/" DELIMITED BY SIZE INTO C-OU-PATH
+        END-STRING
+    END-IF
+    MOVE "WRT " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    IF WS-RET = "00"
+        MOVE "201" TO C-STATUS
+    ELSE
+        MOVE "409" TO C-STATUS
+        MOVE "org unit already exists" TO C-MSG
+    END-IF.
+
+DO-RENAME.
+    IF FUNCTION TRIM (C-NAME) = SPACES
+        MOVE "422" TO C-STATUS
+        MOVE "name is required" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE "GET " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    IF WS-RET NOT = "00"
+        MOVE "404" TO C-STATUS
+        MOVE "not found" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE FUNCTION TRIM (C-NAME) TO C-OU-NAME
+    MOVE "REW " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    MOVE "200" TO C-STATUS.
+
+DO-MOVE.
+    MOVE "GET " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    IF WS-RET NOT = "00"
+        MOVE "404" TO C-STATUS
+        MOVE "not found" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-PAR-REC
+    MOVE C-PARENT TO WS-PAR-ID
+    CALL "20ORGSE0" USING WS-OP WS-RET WS-PAR-REC WS-OU-TABLE
+    IF WS-RET NOT = "00"
+        MOVE "404" TO C-STATUS
+        MOVE "not found" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE FUNCTION STORED-CHAR-LENGTH (C-OU-PATH) TO WS-UNIT-LEN
+    IF WS-PAR-PATH (1 : WS-UNIT-LEN) = C-OU-PATH (1 : WS-UNIT-LEN)
+        MOVE "409" TO C-STATUS
+        MOVE "moving a unit below itself would create a cycle"
+            TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE C-OU-PATH TO WS-OLD-PREFIX
+    MOVE WS-UNIT-LEN TO WS-OLD-LEN
+    MOVE FUNCTION STORED-CHAR-LENGTH (WS-PAR-PATH) TO WS-PAR-LEN
+    MOVE SPACES TO WS-NEW-PREFIX
+    STRING WS-PAR-PATH (1 : WS-PAR-LEN)
+           FUNCTION TRIM (C-OU-ID) "/"
+        DELIMITED BY SIZE INTO WS-NEW-PREFIX
+    END-STRING
+    MOVE FUNCTION STORED-CHAR-LENGTH (WS-NEW-PREFIX) TO WS-NEW-LEN
+    *> rewrite every descendant's path old-prefix -> new-prefix
+    MOVE "ALL " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET WS-OU-REC WS-OU-TABLE
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-OU-COUNT
+        IF WS-OU-ROW-ID (WS-I) NOT = C-OU-ID
+            MOVE FUNCTION STORED-CHAR-LENGTH
+                (WS-OU-ROW-PATH (WS-I)) TO WS-ROW-LEN
+            IF WS-ROW-LEN > WS-OLD-LEN
+                AND WS-OU-ROW-PATH (WS-I) (1 : WS-OLD-LEN)
+                    = WS-OLD-PREFIX (1 : WS-OLD-LEN)
+                MOVE WS-OU-ROW-ID (WS-I)     TO WS-OU-ID
+                MOVE WS-OU-ROW-NAME (WS-I)   TO WS-OU-NAME
+                MOVE WS-OU-ROW-PARENT (WS-I) TO WS-OU-PARENT
+                MOVE SPACES TO WS-OU-PATH
+                STRING WS-NEW-PREFIX (1 : WS-NEW-LEN)
+                       WS-OU-ROW-PATH (WS-I)
+                           (WS-OLD-LEN + 1 : WS-ROW-LEN - WS-OLD-LEN)
+                    DELIMITED BY SIZE INTO WS-OU-PATH
+                END-STRING
+                MOVE "REW " TO WS-OP
+                CALL "20ORGSE0" USING WS-OP WS-RET WS-OU-REC
+                                      WS-OU-TABLE
+            END-IF
+        END-IF
+    END-PERFORM
+    MOVE C-PARENT TO C-OU-PARENT
+    MOVE WS-NEW-PREFIX TO C-OU-PATH
+    MOVE "REW " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    MOVE "200" TO C-STATUS.
+
+DO-DELETE.
+    MOVE "GET " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    IF WS-RET NOT = "00"
+        MOVE "404" TO C-STATUS
+        MOVE "not found" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-OU-REC
+    MOVE C-OU-ID TO WS-OU-PARENT
+    MOVE "KID " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET WS-OU-REC WS-OU-TABLE
+    IF WS-RET = "00"
+        MOVE "409" TO C-STATUS
+        MOVE "unit has sub-units" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-MB-REC
+    MOVE C-OU-ID TO WS-MB-ORG
+    MOVE "ORG " TO WS-OP
+    CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
+    IF WS-MB-COUNT > 0
+        MOVE "409" TO C-STATUS
+        MOVE "unit has members" TO C-MSG
+        EXIT PARAGRAPH
+    END-IF
+    *> the documents/akten guard follows when the documents BC lands
+    MOVE "DEL " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    MOVE "200" TO C-STATUS.
+
+DO-REQUIRE.
+    MOVE "GET " TO WS-OP
+    CALL "20ORGSE0" USING WS-OP WS-RET C-OU-REC WS-OU-TABLE
+    IF WS-RET = "00"
+        MOVE "200" TO C-STATUS
+    ELSE
+        MOVE "404" TO C-STATUS
+        MOVE "not found" TO C-MSG
+    END-IF.
+END PROGRAM "20ORGSC0".

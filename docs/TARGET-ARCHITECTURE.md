@@ -201,9 +201,18 @@ batch 2, max attempts 5, backoff base 5000 ms, lease 300 s), `DMS_AI_URL`,
 
 ## 9. Migration iterations
 
-1. **Docs only** (this iteration): CLAUDE.md, as-is + target architecture.
-2. Platform layer `00…` + `10…` (CGI, JSON, config, errors, store, auth) + first
-   vertical slice: organization BC end-to-end on VSAM, behind Apache.
+1. **Docs only** — done: CLAUDE.md, as-is + target architecture.
+2. **Platform + organization slice — done**: `00HTTPC0` (CGI dispatch, routing,
+   status/JSON emission), `00JSONC0/00JSONC1` (JSON parse/escape), `00UUIDC0`,
+   `10USERC0/10AUTHC0/10AUDTE0` (identity, path-inherited RBAC, audit file) and the
+   full organization BC (`20ORGS*`, `20USRS*`, `20MEMB*`) on GnuCOBOL indexed files
+   behind Apache `mod_cgid`; containerized (`cobol/Dockerfile`), smoked in CI
+   (`.github/workflows/cobol-ci.yml` — builds the image, starts the container, runs
+   `scripts/cobol-smoke.sh`) and wired into `compose.uat.yml` as `dms-cobol` on :7861.
+   Remaining platform pieces (`00MPARC0` multipart, `00STORC0` object store) land
+   with the documents BC. Implementation note: under `mod_cgid` the CGI's stdin is a
+   unix socket, so the request body is read via `CALL "read"` on fd 0 — not by
+   reopening `/dev/stdin`.
 3. documents + metadata + Akten + classes; upload path with durable-store rule.
 4. conversion: job files, worker daemon, external tools in-process.
 5. aiextraction: catalogs, libcurl client, prompt/parse; search: indexer + query.
