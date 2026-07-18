@@ -177,16 +177,23 @@ unwritable store ⇒ 503 and no metadata, exactly as today. (S3 dropped, D-2.)
   (worker retry / terminal FAILED), not 504 (the HTTP hop is gone — the 504 path remains
   only in the API error table for parity of documented codes). `DMS_OCR_LANG`
   (default `deu+eng` in the image) selects the Tesseract language data.
-- **Extraction (`60EXTRC0` + `60CURLC0`) — text-only (D-9)**: prompt built from the DB
-  catalogs (classes, intents + fields, active Ordnungsbegriff types) exactly as
-  `prompt.py`; the document is always sent as the **OCR text** (100 000-char cap) — the
-  `file` (inline PDF) and image data-URL transport modes are dropped, so
-  `DMS_AI_DOCUMENT_MODE` goes away; `response_format: json_object`; parse + validate the
-  model's JSON against the catalogs as `parsing.py` does. Unconfigured (`DMS_AI_TOKEN`
-  empty) ⇒ skip ⇒
-  `MANUAL_INDEXING`; transport/HTTP/parse errors ⇒ retry (3×, then give up for this
-  run) ⇒ `REVIEW`. A COBOL state counter replaces the resilience4j circuit breaker
-  (decision D-5).
+- **Extraction (`60EXTRC0` + `60CURLC0`) — text-only (D-9), done (iteration 6)**: the
+  prompt is built from the catalogs (document classes, active Ordnungsbegriff types,
+  intents + fields) exactly as `prompt.py`; the document is always sent as the **OCR
+  text** (100 000-char cap) — the `file` (inline PDF) and image data-URL transport modes
+  are dropped, so `DMS_AI_DOCUMENT_MODE` goes away. `60CURLC0` POSTs
+  `response_format: json_object` to `<DMS_AI_URL>/chat/completions` **through libcurl as
+  a C library** (`curl_easy_*` via `CALL`, Bearer token, response captured to a scratch
+  file with libcurl's default writer — no shell-out; the worker links `-lcurl` with
+  `--no-as-needed`). `60EXTRC0` extracts `choices[0].message.content`, leniently parses
+  the answer against the catalogs as `parsing.py` does (scalars via `00JSONC0`; the
+  three-valued `ordnungsbegriffe` array walked object-by-object and canonicalized to
+  active types), and prefills empty metadata (`extractedByAi`, never overwriting user
+  rows, never forming Akten). Unconfigured (`DMS_AI_TOKEN` empty) or blank text ⇒ skip ⇒
+  `MANUAL_INDEXING`; transport/HTTP error or malformed Ordnungsbegriff section ⇒
+  `REVIEW`; none found ⇒ `MANUAL_INDEXING`. Retry/backoff is handled once, at the job
+  level, by the worker (the resilience4j circuit breaker of decision D-5 is not
+  reproduced — a failed extraction simply degrades that run).
 
 ## 7. Frontend: green-screen re-skin
 
@@ -275,8 +282,34 @@ poll 2000 ms, batch 2, max attempts 5, backoff base 5000 ms, lease 300 s),
    `/jobs` DONE, and re-runs an idempotent reprocess. AI suggestions / `MANUAL_INDEXING`
    / `REVIEW` flagging and search reindex arrive with iterations 6 / 5 respectively;
    this iteration lands the document at READY with its text.
-5. aiextraction: catalogs, libcurl client, prompt/parse; search: indexer + query.
-6. feeds, backup/bootstrap, green-screen re-skin, parity test pass; decommission
+5. **search — deferred** (skipped for now at the product owner's request; the
+   indexer + query on an own token-index file, plus the org-delete document/akte
+   guard, land in a later pass).
+6. **aiextraction — done**: the LLM is called **in-process via libcurl as a C
+   library** (rule 6). `60CURLC0` CALLs `curl_easy_init/_setopt/_perform/_getinfo/
+   _cleanup` to POST the OpenAI-compatible chat-completions request (Bearer auth,
+   response captured with libcurl's built-in file writer, no shell-out to the curl
+   binary); the worker binary links `-lcurl` (built with `--no-as-needed` because the
+   symbols resolve at runtime). Three new catalog files — `EXTRINTENT`, `INTFIELD`,
+   `ORDNTYPE` (`60INTNE0`/`60INFDE0`/`60ORDTE0`), seeded by `90BOOTW0` with the
+   Rechnungseingang intent + fields and the Kundennummer/Vertragsnummer types. The
+   extraction control `60EXTRC0` (port of MetadataExtraction + ExtractionPrompt + the
+   parse half of AiExtractionClient + MetadataValidation.applySuggestions/
+   flagForIndexing) assembles the system prompt from the document-class,
+   Ordnungsbegriff-type and intent/field catalogs, sends the document as its **OCR
+   text only** (D-9, 100 000-char cap), leniently parses the JSON answer
+   (documentClass, documentDate, filePlanReference, intent + its fields, and the
+   three-valued `ordnungsbegriffe` array), and prefills empty metadata
+   (`extractedByAi`, never overwriting user rows, never forming Akten). Graceful
+   degradation (§5 QG-1): unconfigured (`DMS_AI_TOKEN` unset) or blank text ⇒
+   `MANUAL_INDEXING`, a transport/HTTP error ⇒ `REVIEW`, a malformed Ordnungsbegriff
+   section ⇒ `REVIEW`, none found ⇒ `MANUAL_INDEXING` — the document still reaches
+   READY. Wired into `50CONVC0` after the TEXT rendition. Smoke asserts the
+   unconfigured path (document READY + `MANUAL_INDEXING`). **Deferred:** the
+   catalog-management REST boundaries (`/api/v1/intents`,
+   `/api/v1/ordnungsbegriff-types`) — the catalog is seeded and drives extraction;
+   runtime CRUD of intents/types is a follow-up.
+7. feeds, backup/bootstrap, green-screen re-skin, parity test pass; decommission
    Java + Python + SQLite.
 
 Each iteration keeps the old and new stacks behind the same API where feasible;

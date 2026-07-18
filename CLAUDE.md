@@ -67,7 +67,13 @@ up to date as the migration proceeds.
    added the conversion BC — the in-process ingest worker daemon (`50JOBSW0`, job
    claim/lease/retry/backoff) driving OCR-only conversion (`50CONVC0`: ocrmypdf +
    pdftotext, no PDF/A) to the `TEXT` rendition, RECEIVED → CONVERTING → READY, plus
-   the `/jobs` queue view — extended-smoked (upload → READY, OCR text, `/jobs` DONE).
+   the `/jobs` queue view — extended-smoked (upload → READY, OCR text, `/jobs` DONE);
+   iteration 5 (search) is deferred at the product owner's request; iteration 6 (done)
+   added the aiextraction BC — the LLM called in-process via **libcurl** (`60CURLC0`,
+   `curl_easy_*`), three seeded catalogs (intents/fields/Ordnungsbegriff types), and
+   `60EXTRC0` (prompt from catalogs, OCR-text-only request, lenient JSON parse,
+   metadata prefill) wired into the worker with graceful degradation
+   (unconfigured → MANUAL_INDEXING, errored → REVIEW; document still READY).
 
 ## Source file naming convention
 

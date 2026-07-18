@@ -141,6 +141,20 @@ curl -sSf "${H_NOBODY[@]}" "$BASE/api/v1/jobs" | grep -q "$DOC_ID" \
   && { echo "::error::stranger sees job (ACL broken)"; exit 1; } || true
 echo "jobs endpoint OK"
 
+# AI extraction graceful degradation (iteration 6): no DMS_AI_TOKEN in the
+# smoke image, so the worker skips suggestions and flags the document
+# MANUAL_INDEXING via a version-0 metadata row — it still reached READY.
+AIMETA=$(curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID/metadata")
+echo "$AIMETA" | grep -q '"indexingFlag":"MANUAL_INDEXING"' \
+  || { echo "::error::expected MANUAL_INDEXING flag after unconfigured AI"; exit 1; }
+echo "AI graceful degradation OK"
+
+# /config advertises the seeded document classes and aiEnabled=false
+CFG=$(curl -sSf "${H_ADMIN[@]}" "$BASE/api/v1/config")
+echo "$CFG" | grep -q '"aiEnabled":false' \
+  || { echo "::error::aiEnabled should be false without DMS_AI_TOKEN"; exit 1; }
+echo "config aiEnabled OK"
+
 # non-PDF -> 415, empty -> 422 (PDF-only intake, D-8)
 printf 'hello' > /tmp/notes.txt
 CODE=$(code -X POST "${H_EDITOR[@]}" -F "file=@/tmp/notes.txt;type=text/plain" \
@@ -163,9 +177,11 @@ CODE=$(code "${H_NOBODY[@]}" "$BASE/api/v1/documents/$DOC_ID")
 curl -sSf "${H_NOBODY[@]}" "$BASE/api/v1/documents" | grep -q "$DOC_ID" \
   && { echo "::error::stranger sees document (ACL broken)"; exit 1; } || true
 
-# metadata: 404 before save, validation, then save (Aktenbildung)
+# metadata: validation, then user-confirmed save (Aktenbildung). A
+# version-0 AI/flag row already exists (graceful degradation above), so
+# GET now returns 200 rather than 404; the PUT versions it to 1.
 CODE=$(code "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID/metadata")
-[ "$CODE" = "404" ] || { echo "::error::metadata pre-save expected 404, got $CODE"; exit 1; }
+[ "$CODE" = "200" ] || { echo "::error::metadata GET expected 200, got $CODE"; exit 1; }
 CODE=$(code -X PUT "${H_EDITOR[@]}" "${JSON[@]}" \
   -d '{"documentDate":"2026-13-40","documentClass":"RECHNUNG","filePlanReference":"KD-1"}' \
   "$BASE/api/v1/documents/$DOC_ID/metadata")

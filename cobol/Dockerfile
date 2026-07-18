@@ -13,6 +13,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         gnucobol3 apache2 curl \
         ocrmypdf tesseract-ocr tesseract-ocr-deu poppler-utils \
+        libcurl4-openssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 COPY src/ /build/src/
@@ -41,11 +42,18 @@ RUN mkdir -p /app/cgi-bin /app/bin \
         /build/src/30DOCSB0.cob /build/src/30METAB0.cob \
         /build/src/30AKTEB0.cob /build/src/30CLASB0.cob \
         /build/src/30CONFB0.cob /build/src/50JOBSB0.cob \
- && cobc -x -free -I /build/src -o /app/bin/dmsworker \
+ && cobc -x -free -I /build/src -Q -Wl,--no-as-needed \
+        -o /app/bin/dmsworker \
         /build/src/50JOBSW0.cob /build/src/50CONVC0.cob \
         /build/src/50JOBSE0.cob /build/src/30STATE0.cob \
-        /build/src/30RENDE0.cob /build/src/00STORC0.cob \
-        /build/src/00UUIDC0.cob \
+        /build/src/30RENDE0.cob /build/src/30DOCSE0.cob \
+        /build/src/00STORC0.cob /build/src/00UUIDC0.cob \
+        /build/src/60EXTRC0.cob /build/src/60CURLC0.cob \
+        /build/src/60INTNE0.cob /build/src/60INFDE0.cob \
+        /build/src/60ORDTE0.cob /build/src/30CLASE0.cob \
+        /build/src/30METAE0.cob /build/src/30FPRFE0.cob \
+        /build/src/30ORDBE0.cob /build/src/30INTNE0.cob \
+        /build/src/00JSONC0.cob -lcurl \
  && cobc -x -free -I /build/src -o /app/bin/dmsboot \
         /build/src/90BOOTW0.cob \
         /build/src/00UUIDC0.cob /build/src/00STORC0.cob \
@@ -56,7 +64,9 @@ RUN mkdir -p /app/cgi-bin /app/bin \
         /build/src/30RENDE0.cob /build/src/30AKTEE0.cob \
         /build/src/30METAE0.cob /build/src/30FPRFE0.cob \
         /build/src/30ORDBE0.cob /build/src/30INTNE0.cob \
-        /build/src/30CLASE0.cob /build/src/50JOBSE0.cob
+        /build/src/30CLASE0.cob /build/src/50JOBSE0.cob \
+        /build/src/60INTNE0.cob /build/src/60INFDE0.cob \
+        /build/src/60ORDTE0.cob
 
 # the JS frontend is kept as-is (green-screen re-skin is a later
 # iteration) and served statically by Apache

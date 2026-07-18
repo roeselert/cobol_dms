@@ -18,6 +18,8 @@ su -s /bin/sh www-data -c "COB_FILE_PATH='$COB_FILE_PATH' /app/bin/dmsboot"
 # reads the same DMS_DATA_DIR / DMS_WORKER_* / DMS_OCR_LANG env.
 su -s /bin/sh www-data -c "COB_FILE_PATH='$COB_FILE_PATH' \
     DMS_DATA_DIR='$DATA_DIR' DMS_OCR_LANG='${DMS_OCR_LANG:-eng}' \
+    DMS_AI_URL='${DMS_AI_URL:-}' DMS_AI_TOKEN='${DMS_AI_TOKEN:-}' \
+    DMS_AI_MODEL='${DMS_AI_MODEL:-}' \
     /app/bin/dmsworker" &
 
 . /etc/apache2/envvars

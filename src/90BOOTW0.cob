@@ -70,6 +70,57 @@ COPY "30CLASR0.cpy" REPLACING ==:PFX:== BY ==WS-CL==.
       10 WS-CL-ROW-DESC PIC X(200).
 COPY "50JOBSR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
 COPY "50JCTLR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
+*> aiextraction catalogs (iteration 6)
+COPY "60INTNR0.cpy" REPLACING ==:PFX:== BY ==WS-IN==.
+01 WS-IN-TABLE.
+   05 WS-IN-COUNT       PIC 9(4).
+   05 WS-IN-ROW OCCURS 50.
+      10 FILLER         PIC X(436).
+COPY "60INFDR0.cpy" REPLACING ==:PFX:== BY ==WS-IF==.
+01 WS-IF-TABLE.
+   05 WS-IF-COUNT       PIC 9(4).
+   05 WS-IF-ROW OCCURS 30.
+      10 FILLER         PIC X(400).
+COPY "60ORDTR0.cpy" REPLACING ==:PFX:== BY ==WS-OT==.
+01 WS-OT-TABLE.
+   05 WS-OT-COUNT       PIC 9(4).
+   05 WS-OT-ROW OCCURS 50.
+      10 FILLER         PIC X(437).
+*> intent-field seed (name + description pairs)
+01 WS-FSEED-I           PIC 9(2) COMP.
+01 WS-FSEED-TABLE.
+   05 FILLER PIC X(36) VALUE "inf-absender".
+   05 FILLER PIC X(100) VALUE "absender".
+   05 FILLER PIC X(300) VALUE "Name des Rechnungsstellers (Absender)".
+   05 FILLER PIC X(36) VALUE "inf-rechnungsnr".
+   05 FILLER PIC X(100) VALUE "rechnungsnummer".
+   05 FILLER PIC X(300) VALUE "Die Rechnungsnummer".
+   05 FILLER PIC X(36) VALUE "inf-betrag".
+   05 FILLER PIC X(100) VALUE "betrag".
+   05 FILLER PIC X(300) VALUE
+      "Der Bruttobetrag inklusive Waehrung, z. B. 119,00 EUR".
+   05 FILLER PIC X(36) VALUE "inf-faellig".
+   05 FILLER PIC X(100) VALUE "faelligkeitsdatum".
+   05 FILLER PIC X(300) VALUE
+      "Das Faelligkeitsdatum der Zahlung, ISO-Format yyyy-MM-dd".
+01 WS-FSEED-R REDEFINES WS-FSEED-TABLE.
+   05 WS-FSEED OCCURS 4.
+      10 WS-FSEED-ID    PIC X(36).
+      10 WS-FSEED-NAME  PIC X(100).
+      10 WS-FSEED-DESC  PIC X(300).
+*> ordnungsbegriff-type seed (name + description pairs)
+01 WS-TSEED-I           PIC 9(2) COMP.
+01 WS-TSEED-TABLE.
+   05 FILLER PIC X(100) VALUE "Kundennummer".
+   05 FILLER PIC X(300) VALUE
+      "Die Kundennummer des Absenders oder Empfaengers".
+   05 FILLER PIC X(100) VALUE "Vertragsnummer".
+   05 FILLER PIC X(300) VALUE
+      "Die Vertrags- oder Policennummer des Dokuments".
+01 WS-TSEED-R REDEFINES WS-TSEED-TABLE.
+   05 WS-TSEED OCCURS 2.
+      10 WS-TSEED-NAME  PIC X(100).
+      10 WS-TSEED-DESC  PIC X(300).
 *> object store interface
 01 WS-S-OP              PIC X(4).
 01 WS-S-RET             PIC X(2).
@@ -184,9 +235,28 @@ MAIN.
     MOVE "DGET" TO WS-OP
     CALL "50JOBSE0" USING WS-OP WS-RET WS-JB-REC WS-JB-CTL
     PERFORM CHECK-PROBE
+    MOVE "GET " TO WS-OP
+
+    MOVE SPACES TO WS-IN-REC
+    MOVE WS-PROBE-ID TO WS-IN-ID
+    CALL "60INTNE0" USING WS-OP WS-RET WS-IN-REC WS-IN-TABLE
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-IF-REC
+    MOVE WS-PROBE-ID TO WS-IF-INTENT
+    MOVE "BYIN" TO WS-OP
+    CALL "60INFDE0" USING WS-OP WS-RET WS-IF-REC WS-IF-TABLE
+    PERFORM CHECK-PROBE
+    MOVE "GET " TO WS-OP
+
+    MOVE SPACES TO WS-OT-REC
+    MOVE WS-PROBE-ID TO WS-OT-ID
+    CALL "60ORDTE0" USING WS-OP WS-RET WS-OT-REC WS-OT-TABLE
+    PERFORM CHECK-PROBE
 
     PERFORM VERIFY-OBJECT-STORE
     PERFORM SEED-DOCUMENT-CLASSES
+    PERFORM SEED-EXTRACTION-CATALOG
 
     CALL "10AUDTE0" USING WS-AUD-USER WS-AUD-ACTION WS-AUD-RTYPE
                           WS-AUD-RID WS-AUD-EFFECT
@@ -228,6 +298,52 @@ SEED-DOCUMENT-CLASSES.
         MOVE "WRT " TO WS-OP
         CALL "30CLASE0" USING WS-OP WS-RET WS-CL-REC WS-CL-TABLE
     END-PERFORM.
+
+SEED-EXTRACTION-CATALOG.
+    *> the demonstrable Rechnungseingang intent + its fields, and the
+    *> two Ordnungsbegriff types (mirrors V2/V3 seeds). Seed each catalog
+    *> only when empty (idempotent restart).
+    MOVE SPACES TO WS-IN-REC
+    MOVE "ALL " TO WS-OP
+    CALL "60INTNE0" USING WS-OP WS-RET WS-IN-REC WS-IN-TABLE
+    IF WS-IN-COUNT = 0
+        DISPLAY "90BOOTW0: seeding extraction intent + fields"
+        CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+        MOVE SPACES TO WS-IN-REC
+        MOVE "in-rechnungseingang" TO WS-IN-ID
+        MOVE "Rechnungseingang" TO WS-IN-NAME
+        MOVE "Eine eingehende Rechnung, die geprueft und zur Zahlung"
+            TO WS-IN-DESC
+        MOVE WS-EPOCH TO WS-IN-CREATED
+        MOVE "WRT " TO WS-OP
+        CALL "60INTNE0" USING WS-OP WS-RET WS-IN-REC WS-IN-TABLE
+        PERFORM VARYING WS-FSEED-I FROM 1 BY 1 UNTIL WS-FSEED-I > 4
+            MOVE SPACES TO WS-IF-REC
+            MOVE WS-FSEED-ID (WS-FSEED-I) TO WS-IF-ID
+            MOVE "in-rechnungseingang" TO WS-IF-INTENT
+            MOVE WS-FSEED-NAME (WS-FSEED-I) TO WS-IF-NAME
+            MOVE WS-FSEED-DESC (WS-FSEED-I) TO WS-IF-DESC
+            MOVE "WRT " TO WS-OP
+            CALL "60INFDE0" USING WS-OP WS-RET WS-IF-REC WS-IF-TABLE
+        END-PERFORM
+    END-IF
+    MOVE SPACES TO WS-OT-REC
+    MOVE "ALL " TO WS-OP
+    CALL "60ORDTE0" USING WS-OP WS-RET WS-OT-REC WS-OT-TABLE
+    IF WS-OT-COUNT = 0
+        DISPLAY "90BOOTW0: seeding Ordnungsbegriff types"
+        PERFORM VARYING WS-TSEED-I FROM 1 BY 1 UNTIL WS-TSEED-I > 2
+            CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+            MOVE SPACES TO WS-OT-REC
+            MOVE WS-UUID TO WS-OT-ID
+            MOVE WS-TSEED-NAME (WS-TSEED-I) TO WS-OT-NAME
+            MOVE WS-TSEED-DESC (WS-TSEED-I) TO WS-OT-DESC
+            MOVE "Y" TO WS-OT-ACTIVE
+            MOVE WS-EPOCH TO WS-OT-CREATED
+            MOVE "WRT " TO WS-OP
+            CALL "60ORDTE0" USING WS-OP WS-RET WS-OT-REC WS-OT-TABLE
+        END-PERFORM
+    END-IF.
 
 CHECK-PROBE.
     IF WS-RET NOT = "00" AND WS-RET NOT = "23"

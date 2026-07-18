@@ -37,6 +37,12 @@ WORKING-STORAGE SECTION.
 01 WS-UUID              PIC X(36).
 01 WS-EPOCH             PIC 9(13).
 COPY "30STATR0.cpy" REPLACING ==:PFX:== BY ==WS-DS==.
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==WS-DC==.
+01 WS-DC-TABLE.
+   05 WS-DC-COUNT       PIC 9(4).
+   05 WS-DC-ROW OCCURS 300.
+      10 FILLER         PIC X(396).
+01 WS-EXT-OUT           PIC X.
 COPY "30RENDR0.cpy" REPLACING ==:PFX:== BY ==WS-RD==.
 01 WS-RD-TABLE.
    05 WS-RD-COUNT       PIC 9(4).
@@ -84,8 +90,23 @@ MAIN.
         GOBACK
     END-IF
     PERFORM UPSERT-TEXT-RENDITION
+    PERFORM RUN-EXTRACTION
     PERFORM SET-READY
     GOBACK.
+
+RUN-EXTRACTION.
+    *> AI metadata extraction on the OCR text (text-only, D-9). Optional
+    *> and best-effort (§5 QG-1): unconfigured -> MANUAL_INDEXING flag,
+    *> errored -> REVIEW flag; the document still reaches READY. The
+    *> document name feeds the prompt's user instruction.
+    MOVE SPACES TO WS-DC-REC
+    MOVE L-DOC-ID TO WS-DC-ID
+    MOVE "GET " TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    IF WS-RET NOT = "00"
+        MOVE "upload" TO WS-DC-NAME
+    END-IF
+    CALL "60EXTRC0" USING L-DOC-ID WS-DC-NAME WS-EXT-OUT.
 
 SET-CONVERTING.
     MOVE SPACES TO WS-DS-REC
