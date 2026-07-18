@@ -56,7 +56,10 @@ up to date as the migration proceeds.
    fallback, plus pdftotext.
 9. **Iterations** (status in `docs/TARGET-ARCHITECTURE.md` §9): iteration 1 was
    documentation only; iteration 2 (done) delivered the platform layer + the
-   organization BC slice behind Apache CGI, containerized and CI-smoked.
+   organization BC slice behind Apache CGI, containerized and CI-smoked; iteration 3
+   (done) added the documents BC — object store, multipart upload (PDF-only), document
+   list/get/download/reprocess, metadata + Aktenbildung, Akten, document classes,
+   `/config` — on ten new indexed files, extended-smoked in CI.
 
 ## Source file naming convention
 

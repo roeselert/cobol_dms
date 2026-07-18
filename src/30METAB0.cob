@@ -1,0 +1,367 @@
+>>SOURCE FORMAT FREE
+*> 30METAB0 — documents: REST boundary for
+*> /api/v1/documents/{documentId}/metadata, mirroring
+*> MetadataController. GET assembles the MetadataDto from DOCMETA,
+*> DOCFPR, DOCORDNB and DOCINTNT (404 when none exist); PUT validates
+*> and saves via 30METAC0 (Aktenbildung included) and answers with the
+*> freshly assembled DTO. Version is server-managed — no 409 here.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "30METAB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==WS-DC==.
+01 WS-DC-DUMMY.
+   05 WS-DC-DUMMY-COUNT PIC 9(4).
+   05 WS-DC-DUMMY-ROW OCCURS 300.
+      10 FILLER         PIC X(376).
+COPY "30METAR0.cpy" REPLACING ==:PFX:== BY ==WS-ME==.
+COPY "30FPRFR0.cpy" REPLACING ==:PFX:== BY ==WS-FP==.
+01 WS-FP-DUMMY.
+   05 WS-FP-DUMMY-COUNT PIC 9(4).
+   05 WS-FP-DUMMY-ROW OCCURS 300.
+      10 FILLER         PIC X(36).
+COPY "30ORDBR0.cpy" REPLACING ==:PFX:== BY ==WS-OB==.
+01 WS-OB-TABLE.
+   05 WS-OB-COUNT       PIC 9(4).
+   05 WS-OB-ROW OCCURS 50.
+      10 WS-OB-ROW-TYPE  PIC X(100).
+      10 WS-OB-ROW-VALUE PIC X(200).
+COPY "30INTNR0.cpy" REPLACING ==:PFX:== BY ==WS-DI==.
+*> metadata save interface (30METAC0)
+01 WS-M-STATUS          PIC X(3).
+01 WS-M-MSG             PIC X(200).
+01 WS-M-DOC             PIC X(36).
+01 WS-M-ORG             PIC X(36).
+01 WS-M-USER            PIC X(36).
+01 WS-M-DATE            PIC X(64).
+01 WS-M-CLASS           PIC X(200).
+01 WS-M-FPR             PIC X(512).
+*> authorization interface
+01 WS-A-USER            PIC X(36).
+01 WS-A-ADMIN           PIC X.
+01 WS-A-ORG             PIC X(36).
+01 WS-A-RID             PIC X(36).
+01 WS-A-NEEDED          PIC X.
+01 WS-A-ACTION          PIC X(10).
+01 WS-A-RTYPE           PIC X(20).
+01 WS-A-AUDIT           PIC X.
+01 WS-A-RESULT          PIC X.
+*> JSON helpers
+01 WS-KEY               PIC X(64).
+01 WS-VAL               PIC X(512).
+01 WS-FOUND             PIC X.
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-I                 PIC 9(4) COMP.
+01 WS-J                 PIC 9(4) COMP.
+01 WS-HAVE-META         PIC X.
+01 WS-HAVE-FPR          PIC X.
+01 WS-HAVE-INTENT       PIC X.
+01 WS-EXTRACTED         PIC X.
+01 WS-VER-Z             PIC Z(3)9.
+01 WS-TMP-TYPE          PIC X(100).
+01 WS-TMP-VALUE         PIC X(200).
+01 WS-FLEN              PIC 9(4) COMP.
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    EVALUATE TRUE
+        WHEN HX-METHOD = "GET"
+            PERFORM LOAD-DOC
+            IF HX-STATUS NOT = 404
+                MOVE "V" TO WS-A-NEEDED
+                MOVE "READ" TO WS-A-ACTION
+                PERFORM REQUIRE-AUTH
+                IF WS-A-RESULT = "A"
+                    PERFORM ASSEMBLE-DTO
+                END-IF
+            END-IF
+        WHEN HX-METHOD = "PUT"
+            PERFORM LOAD-DOC
+            IF HX-STATUS NOT = 404
+                MOVE "E" TO WS-A-NEEDED
+                MOVE "WRITE" TO WS-A-ACTION
+                PERFORM REQUIRE-AUTH
+                IF WS-A-RESULT = "A"
+                    PERFORM DO-SAVE
+                END-IF
+            END-IF
+        WHEN OTHER
+            MOVE 405 TO HX-STATUS
+            MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+    END-EVALUATE
+    GOBACK.
+
+LOAD-DOC.
+    MOVE 0 TO HX-STATUS
+    MOVE SPACES TO WS-DC-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-DC-ID
+    MOVE "GET " TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-DUMMY
+    IF WS-RET NOT = "00"
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+    END-IF.
+
+REQUIRE-AUTH.
+    MOVE HX-USER-ID TO WS-A-USER
+    MOVE HX-USER-ADMIN TO WS-A-ADMIN
+    MOVE WS-DC-ORG TO WS-A-ORG
+    MOVE WS-DC-ID TO WS-A-RID
+    MOVE "DOCUMENT" TO WS-A-RTYPE
+    MOVE "Y" TO WS-A-AUDIT
+    CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG WS-A-RID
+        WS-A-NEEDED WS-A-ACTION WS-A-RTYPE WS-A-AUDIT WS-A-RESULT
+    EVALUATE WS-A-RESULT
+        WHEN "N"
+            MOVE 404 TO HX-STATUS
+            MOVE '{"error":"not found"}' TO HX-RESPONSE
+        WHEN "F"
+            MOVE 403 TO HX-STATUS
+            MOVE SPACES TO HX-RESPONSE
+            STRING '{"error":"insufficient role for '
+                   FUNCTION TRIM (WS-A-ACTION) '"}'
+                DELIMITED BY SIZE INTO HX-RESPONSE
+            END-STRING
+        WHEN OTHER
+            CONTINUE
+    END-EVALUATE.
+
+DO-SAVE.
+    MOVE "documentDate" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-VAL WS-FOUND
+    MOVE SPACES TO WS-M-DATE
+    IF WS-FOUND = "Y"
+        MOVE WS-VAL (1 : 64) TO WS-M-DATE
+    END-IF
+    MOVE "documentClass" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-VAL WS-FOUND
+    MOVE SPACES TO WS-M-CLASS
+    IF WS-FOUND = "Y"
+        MOVE WS-VAL (1 : 200) TO WS-M-CLASS
+    END-IF
+    MOVE "filePlanReference" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-VAL WS-FOUND
+    MOVE SPACES TO WS-M-FPR
+    IF WS-FOUND = "Y"
+        MOVE WS-VAL TO WS-M-FPR
+    END-IF
+    MOVE WS-DC-ID TO WS-M-DOC
+    MOVE WS-DC-ORG TO WS-M-ORG
+    MOVE HX-USER-ID TO WS-M-USER
+    CALL "30METAC0" USING WS-M-STATUS WS-M-MSG WS-M-DOC WS-M-ORG
+        WS-M-USER WS-M-DATE WS-M-CLASS WS-M-FPR
+    IF WS-M-STATUS NOT = "200"
+        MOVE WS-M-STATUS TO HX-STATUS
+        MOVE WS-M-MSG (1 : 200) TO WS-ESC-IN
+        CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+        MOVE SPACES TO HX-RESPONSE
+        STRING '{"error":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+            DELIMITED BY SIZE INTO HX-RESPONSE
+        END-STRING
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM ASSEMBLE-DTO.
+
+ASSEMBLE-DTO.
+    MOVE SPACES TO WS-ME-REC
+    MOVE WS-DC-ID TO WS-ME-DOC
+    MOVE "GET " TO WS-OP
+    CALL "30METAE0" USING WS-OP WS-RET WS-ME-REC
+    IF WS-RET = "00"
+        MOVE "Y" TO WS-HAVE-META
+    ELSE
+        MOVE "N" TO WS-HAVE-META
+    END-IF
+    MOVE SPACES TO WS-FP-REC
+    MOVE WS-DC-ID TO WS-FP-DOC
+    MOVE "GET " TO WS-OP
+    CALL "30FPRFE0" USING WS-OP WS-RET WS-FP-REC WS-FP-DUMMY
+    IF WS-RET = "00"
+        MOVE "Y" TO WS-HAVE-FPR
+    ELSE
+        MOVE "N" TO WS-HAVE-FPR
+    END-IF
+    MOVE SPACES TO WS-OB-REC
+    MOVE WS-DC-ID TO WS-OB-DOC
+    MOVE "BYDC" TO WS-OP
+    CALL "30ORDBE0" USING WS-OP WS-RET WS-OB-REC WS-OB-TABLE
+    MOVE SPACES TO WS-DI-REC
+    MOVE WS-DC-ID TO WS-DI-DOC
+    MOVE "GET " TO WS-OP
+    CALL "30INTNE0" USING WS-OP WS-RET WS-DI-REC
+    IF WS-RET = "00"
+        MOVE "Y" TO WS-HAVE-INTENT
+    ELSE
+        MOVE "N" TO WS-HAVE-INTENT
+    END-IF
+    IF WS-HAVE-META = "N" AND WS-HAVE-FPR = "N"
+            AND WS-HAVE-INTENT = "N" AND WS-OB-COUNT = 0
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM SORT-ORDNUNGSBEGRIFFE
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    STRING '{"documentDate":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-HAVE-META = "Y" AND WS-ME-DATE NOT = SPACES
+        STRING '"' FUNCTION TRIM (WS-ME-DATE) '"'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        PERFORM EMIT-NULL
+    END-IF
+    STRING ',"documentClass":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-HAVE-META = "Y" AND WS-ME-CLASS NOT = SPACES
+        MOVE WS-ME-CLASS TO WS-ESC-IN
+        PERFORM EMIT-ESCAPED
+    ELSE
+        PERFORM EMIT-NULL
+    END-IF
+    STRING ',"filePlanReference":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-HAVE-FPR = "Y" AND WS-FP-FPR NOT = SPACES
+        MOVE WS-FP-FPR TO WS-ESC-IN
+        PERFORM EMIT-ESCAPED
+    ELSE
+        PERFORM EMIT-NULL
+    END-IF
+    STRING ',"akteId":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-HAVE-FPR = "Y" AND WS-FP-AKTE NOT = SPACES
+        STRING '"' FUNCTION TRIM (WS-FP-AKTE) '"'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        PERFORM EMIT-NULL
+    END-IF
+    MOVE "N" TO WS-EXTRACTED
+    IF (WS-HAVE-META = "Y" AND WS-ME-EXTRACTED = "Y")
+            OR (WS-HAVE-FPR = "Y" AND WS-FP-EXTRACTED = "Y")
+        MOVE "Y" TO WS-EXTRACTED
+    END-IF
+    IF WS-EXTRACTED = "Y"
+        STRING ',"extractedByAi":true' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        STRING ',"extractedByAi":false' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-IF
+    IF WS-HAVE-META = "Y"
+        MOVE WS-ME-VERSION TO WS-VER-Z
+    ELSE
+        MOVE 0 TO WS-VER-Z
+    END-IF
+    STRING ',"version":' FUNCTION TRIM (WS-VER-Z)
+           ',"ordnungsbegriffe":['
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-OB-COUNT
+        IF WS-I > 1
+            STRING "," DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        END-IF
+        STRING '{"typeName":' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+        MOVE WS-OB-ROW-TYPE (WS-I) TO WS-ESC-IN
+        PERFORM EMIT-ESCAPED
+        STRING ',"value":' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+        MOVE WS-OB-ROW-VALUE (WS-I) TO WS-ESC-IN
+        PERFORM EMIT-ESCAPED
+        STRING "}" DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-PERFORM
+    STRING '],"indexingFlag":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-HAVE-META = "Y" AND WS-ME-FLAG NOT = SPACES
+        STRING '"' FUNCTION TRIM (WS-ME-FLAG) '"'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        PERFORM EMIT-NULL
+    END-IF
+    STRING ',"intent":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    IF WS-HAVE-INTENT = "Y"
+        STRING '{"name":' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+        MOVE WS-DI-NAME TO WS-ESC-IN
+        PERFORM EMIT-ESCAPED
+        STRING ',"fields":' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+        MOVE FUNCTION STORED-CHAR-LENGTH (WS-DI-FIELDS) TO WS-FLEN
+        IF WS-FLEN > 0
+            *> stored verbatim as a JSON object string
+            STRING WS-DI-FIELDS (1 : WS-FLEN) DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        ELSE
+            PERFORM EMIT-NULL
+        END-IF
+        STRING "}" DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        PERFORM EMIT-NULL
+    END-IF
+    STRING "}" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS.
+
+SORT-ORDNUNGSBEGRIFFE.
+    *> insertion sort by typeName then value (as-is ORDER BY)
+    PERFORM VARYING WS-I FROM 2 BY 1 UNTIL WS-I > WS-OB-COUNT
+        PERFORM VARYING WS-J FROM WS-I BY -1 UNTIL WS-J < 2
+            IF WS-OB-ROW-TYPE (WS-J) < WS-OB-ROW-TYPE (WS-J - 1)
+                OR (WS-OB-ROW-TYPE (WS-J) = WS-OB-ROW-TYPE (WS-J - 1)
+                    AND WS-OB-ROW-VALUE (WS-J)
+                        < WS-OB-ROW-VALUE (WS-J - 1))
+                MOVE WS-OB-ROW-TYPE (WS-J) TO WS-TMP-TYPE
+                MOVE WS-OB-ROW-VALUE (WS-J) TO WS-TMP-VALUE
+                MOVE WS-OB-ROW-TYPE (WS-J - 1)
+                    TO WS-OB-ROW-TYPE (WS-J)
+                MOVE WS-OB-ROW-VALUE (WS-J - 1)
+                    TO WS-OB-ROW-VALUE (WS-J)
+                MOVE WS-TMP-TYPE TO WS-OB-ROW-TYPE (WS-J - 1)
+                MOVE WS-TMP-VALUE TO WS-OB-ROW-VALUE (WS-J - 1)
+            ELSE
+                EXIT PERFORM
+            END-IF
+        END-PERFORM
+    END-PERFORM.
+
+EMIT-NULL.
+    STRING "null" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+
+EMIT-ESCAPED.
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '"' WS-ESC-OUT (1 : WS-ESC-LEN) '"'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+END PROGRAM "30METAB0".

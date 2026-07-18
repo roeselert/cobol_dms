@@ -12,23 +12,41 @@ RUN apt-get update \
 
 COPY src/ /build/src/
 
-# one CGI executable (00HTTPC0 is the main program) + the bootstrap
+# one CGI executable (00HTTPC0 is the main program) + the bootstrap.
+# The explicit file lists ARE the authoritative build manifest (CLAUDE.md).
 RUN mkdir -p /app/cgi-bin /app/bin \
  && cobc -x -free -I /build/src -o /app/cgi-bin/dmsapi \
         /build/src/00HTTPC0.cob \
         /build/src/00JSONC0.cob /build/src/00JSONC1.cob \
-        /build/src/00UUIDC0.cob \
+        /build/src/00UUIDC0.cob /build/src/00TIMEC0.cob \
+        /build/src/00STORC0.cob /build/src/00MPARC0.cob \
         /build/src/10USERC0.cob /build/src/10AUTHC0.cob \
         /build/src/10AUDTE0.cob \
         /build/src/20ORGSE0.cob /build/src/20USRSE0.cob \
         /build/src/20MEMBE0.cob /build/src/20ORGSC0.cob \
         /build/src/20ORGSB0.cob /build/src/20MEMBB0.cob \
         /build/src/20USRSB0.cob \
+        /build/src/30DOCSE0.cob /build/src/30STATE0.cob \
+        /build/src/30RENDE0.cob /build/src/30AKTEE0.cob \
+        /build/src/30METAE0.cob /build/src/30FPRFE0.cob \
+        /build/src/30ORDBE0.cob /build/src/30INTNE0.cob \
+        /build/src/30CLASE0.cob /build/src/50JOBSE0.cob \
+        /build/src/30VOCAC0.cob /build/src/30AKTBC0.cob \
+        /build/src/30METAC0.cob \
+        /build/src/30DOCSB0.cob /build/src/30METAB0.cob \
+        /build/src/30AKTEB0.cob /build/src/30CLASB0.cob \
+        /build/src/30CONFB0.cob \
  && cobc -x -free -I /build/src -o /app/bin/dmsboot \
         /build/src/90BOOTW0.cob \
+        /build/src/00UUIDC0.cob /build/src/00STORC0.cob \
+        /build/src/10AUDTE0.cob \
         /build/src/20ORGSE0.cob /build/src/20USRSE0.cob \
-        /build/src/20MEMBE0.cob /build/src/10AUDTE0.cob \
-        /build/src/00UUIDC0.cob
+        /build/src/20MEMBE0.cob \
+        /build/src/30DOCSE0.cob /build/src/30STATE0.cob \
+        /build/src/30RENDE0.cob /build/src/30AKTEE0.cob \
+        /build/src/30METAE0.cob /build/src/30FPRFE0.cob \
+        /build/src/30ORDBE0.cob /build/src/30INTNE0.cob \
+        /build/src/30CLASE0.cob /build/src/50JOBSE0.cob
 
 # the JS frontend is kept as-is (green-screen re-skin is a later
 # iteration) and served statically by Apache
@@ -44,7 +62,8 @@ RUN a2enmod cgid env \
 
 ENV DMS_SECURITY_MODE=dev \
     DMS_BOOTSTRAP_ADMINS=admin@example.com \
-    DMS_DATA_DIR=/data
+    DMS_DATA_DIR=/data \
+    DMS_UPLOAD_MAX_BYTES=104857600
 
 EXPOSE 7860
 VOLUME /data

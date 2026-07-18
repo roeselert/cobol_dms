@@ -238,7 +238,7 @@ Plus actuator health (`/actuator/health`, readiness group db/objectStore/worker)
 springdoc OpenAPI (`/v3/api-docs`, `/swagger-ui.html`).
 
 **Error contract** (`ApiExceptionHandler`): JSON error body; 400 bad request,
-403 forbidden, 404 not found, 409 conflict (e.g. metadata version), 413 payload too
+403 forbidden, 404 not found, 409 conflict (e.g. duplicate document-class name), 413 payload too
 large, 415 unsupported media type (accepted: pdf, docx, jpg/jpeg, png, tif/tiff, eml),
 422 unprocessable, 502 upstream AI error, 503 storage unavailable, 504 conversion
 timeout. *Migration decision (2026-07-17): the COBOL target accepts only PDF — every

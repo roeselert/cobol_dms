@@ -7,7 +7,7 @@ set -e
 DATA_DIR="${DMS_DATA_DIR:-/data}"
 export COB_FILE_PATH="$DATA_DIR/vsam"
 
-mkdir -p "$COB_FILE_PATH"
+mkdir -p "$COB_FILE_PATH" "$DATA_DIR/objects/tmp"
 chown -R www-data:www-data "$DATA_DIR"
 
 su -s /bin/sh www-data -c "COB_FILE_PATH='$COB_FILE_PATH' /app/bin/dmsboot"

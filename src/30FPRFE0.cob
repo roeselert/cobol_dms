@@ -1,0 +1,113 @@
+>>SOURCE FORMAT FREE
+*> 30FPRFE0 — documents: file access for the DOCFPR indexed file
+*> (document_file_plan_reference, one row per document). Ops: GET ·
+*> WRT · REW · BYAK (table of document ids for an Akte, via the
+*> akte-id alternate key). L-RET: 00 · 23 · 22 · 9x.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "30FPRFE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT FPR-FILE ASSIGN TO "DOCFPR"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS FP-DOC
+        ALTERNATE RECORD KEY IS FP-AKTE WITH DUPLICATES
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD FPR-FILE.
+COPY "30FPRFR0.cpy" REPLACING ==:PFX:== BY ==FP==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "30FPRFR0.cpy" REPLACING ==:PFX:== BY ==L-FP==.
+01 L-FP-TABLE.
+   05 L-FP-COUNT        PIC 9(4).
+   05 L-FP-ROW OCCURS 300.
+      10 L-FP-ROW-DOC   PIC X(36).
+PROCEDURE DIVISION USING L-OP L-RET L-FP-REC L-FP-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "REW " PERFORM DO-REWRITE
+        WHEN "BYAK" PERFORM DO-BY-AKTE
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE FPR-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O FPR-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT FPR-FILE
+        CLOSE FPR-FILE
+        OPEN I-O FPR-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-FP-DOC TO FP-DOC
+    READ FPR-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE FP-REC TO L-FP-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-WRITE.
+    MOVE L-FP-REC TO FP-REC
+    WRITE FP-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-REWRITE.
+    MOVE L-FP-DOC TO FP-DOC
+    READ FPR-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        MOVE L-FP-REC TO FP-REC
+        REWRITE FP-REC
+        IF WS-FS = "00" OR WS-FS = "02"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-BY-AKTE.
+    MOVE 0 TO L-FP-COUNT
+    MOVE L-FP-AKTE TO FP-AKTE
+    START FPR-FILE KEY IS = FP-AKTE
+    IF WS-FS = "00"
+        PERFORM UNTIL L-FP-COUNT >= 300
+            READ FPR-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            IF FP-AKTE NOT = L-FP-AKTE
+                EXIT PERFORM
+            END-IF
+            ADD 1 TO L-FP-COUNT
+            MOVE FP-DOC TO L-FP-ROW-DOC (L-FP-COUNT)
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+END PROGRAM "30FPRFE0".

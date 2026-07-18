@@ -66,14 +66,15 @@ Flat `src/`, names per the `NNMMMMLS` convention in `CLAUDE.md`:
 | `00CONFC0.cob` | `application.yml`/`DmsProperties`: env-var config |
 | `00ERRSC0.cob` | `ApiExceptionHandler`: error mapping |
 | `00STORC0.cob` | `FilesystemObjectStore` (put/get, durable-before-metadata) |
+| `00TIMEC0.cob` | epoch-millis → ISO-8601 instant (wire format for ingestDate) |
 | `10AUTHC0.cob` | `Authorization` + hierarchy role inheritance |
 | `10AUDTE0.cob` | `AuditTrail` + audit file access |
 | `10USERC0.cob` | `CurrentUser`/`UserProvisioning` (from Apache auth vars) |
 | `20ORGSB0/C0/E0` | organization BC (orgs, users, members REST + logic + files) |
-| `30DOCSB0/C0/E0` | documents BC (upload, list, get, file download, reprocess) |
-| `30METAB0/C0` | metadata REST + validation + Aktenbildung |
-| `30AKTEB0/E0` | Akten REST + file access |
-| `30CLASB0/E0` | document classes |
+| `30DOCSB0` + `30DOCSE0`/`30STATE0`/`30RENDE0` | documents BC boundary + DOCUMENT/DOCSTAT/RENDTION file access |
+| `30METAB0` + `30METAC0`/`30METAE0`/`30FPRFE0`/`30ORDBE0`/`30INTNE0` | metadata REST + validation/save + its files |
+| `30AKTEB0` + `30AKTBC0`/`30AKTEE0` | Akten REST + Aktenbildung control + file access |
+| `30CLASB0` + `30VOCAC0`/`30CLASE0`, `30CONFB0` | document classes REST + vocabulary control + `/config` |
 | `40INDXC0.cob` | `SearchIndexer` (tokenize, write token index) |
 | `40QRYB0…` → `40QURYB0.cob` | `SearchController`/`SearchQuery` (ACL-filtered) |
 | `50JOBSB0.cob` | `JobsController` |
@@ -121,8 +122,9 @@ consequence `RENDTION.producer` values shrink to
 `upload | ocrmypdf | ghostscript | passthrough`.
 
 Rules carried over: `DOCORDNB.type-name` stays a snapshot (no referential check);
-`AUDITLOG.user-id` is never validated against `USERS`; optimistic `version` numbers on
-metadata are compared in the control layer (409 on mismatch).
+`AUDITLOG.user-id` is never validated against `USERS`; metadata `version` is
+server-incremented and never supplied by the client (no optimistic-lock 409 — the
+only 409 in the documents BC is a duplicate `DOCCLASS.name`).
 
 **Concurrency**: CGI processes and the worker share files — every file is opened
 `SHARING WITH ALL OTHER` with record locking (GnuCOBOL + Berkeley DB backend);
@@ -213,7 +215,34 @@ batch 2, max attempts 5, backoff base 5000 ms, lease 300 s), `DMS_AI_URL`,
    with the documents BC. Implementation note: under `mod_cgid` the CGI's stdin is a
    unix socket, so the request body is read via `CALL "read"` on fd 0 — not by
    reopening `/dev/stdin`.
-3. documents + metadata + Akten + classes; upload path with durable-store rule.
+3. **documents BC — done**: the object store (`00STORC0`, filesystem, temp-file +
+   `rename` so the binary is durable before any record — R-1) and multipart parser
+   (`00MPARC0`, streaming `read(2)` on fd 0, file part staged under `objects/tmp`,
+   SHA-256 via `sha256sum`); the documents slice `30DOCS*` (upload/list/get/download/
+   reprocess), `30META*` + `30VOCAC0`/`30AKTBC0`/`30METAC0` (metadata validation,
+   controlled vocabulary, Aktenbildung), `30AKTEB0`, `30CLASB0`, `30CONFB0` on ten new
+   indexed files (`DOCUMENT`, `DOCSTAT`, `RENDTION`, `AKTE`, `DOCMETA`, `DOCFPR`,
+   `DOCORDNB`, `DOCINTNT`, `DOCCLASS`, `CONVJOB`). `90BOOTW0` seeds the six document
+   classes. The dispatcher now parses the query string, routes multipart uploads
+   through `00MPARC0`, and lets a boundary stream a raw response (`HX-EMITTED`: the
+   file download writes headers via `write(2)` then the body via `cat`). Extended
+   smoke covers upload/415/422/download-round-trip/metadata/Aktenbildung/classes/
+   config/reprocess/ACL. Parity notes:
+   - **No cross-file transaction.** The as-is upload commits Document + status + ORIGINAL
+     rendition + job in one SQL transaction. VSAM has no such envelope, so the writes
+     are ordered (binary first, then Document, status, rendition, job) and reprocess is
+     idempotent (deterministic storage keys). A crash mid-sequence can leave a document
+     without its job row; the worker's lease-sweep (iteration 4) plus reprocess recover
+     it — same end state, weaker atomicity, acceptable for this single-node target.
+   - **Metadata carries no optimistic lock / 409.** `version` is server-incremented and
+     read-only to clients (matches the as-is code; the only 409 in the BC is a duplicate
+     document-class name).
+   - **`aiEnabled`** in `/config` reflects `DMS_AI_TOKEN` (the extraction service is
+     gone; the LLM is called in-process in iteration 6), replacing the as-is
+     "extraction URL configured" flag.
+   - **Deferred:** deleting an org unit that still owns documents/Akten should be 409;
+     the org-control delete guard currently checks only sub-units and members (the
+     cross-BC document/akte count lands with the search index in iteration 5).
 4. conversion: job files, worker daemon, external tools in-process.
 5. aiextraction: catalogs, libcurl client, prompt/parse; search: indexer + query.
 6. feeds, backup/bootstrap, green-screen re-skin, parity test pass; decommission
@@ -227,9 +256,9 @@ the parity checklist in `CLAUDE.md` gates every step.
 | # | Decision | Status |
 |---|----------|--------|
 | D-1 | GnuCOBOL indexed-file backend (built-in ISAM vs. Berkeley DB) and its locking guarantees under concurrent CGI + daemon access | open |
-| D-2 | S3 object-store support: drop (filesystem only) or re-add later via libcurl | leaning drop |
-| D-3 | Multipart parsing limits & streaming for 100 MB uploads in a CGI process | open |
-| D-4 | Crypto for SHA-256/HMAC: libcrypto via `CALL` vs. own implementation | leaning libcrypto |
+| D-2 | S3 object-store support: drop (filesystem only) or re-add later via libcurl | **decided 2026-07-18** — filesystem `00STORC0` implemented (`$DMS_DATA_DIR/objects`, temp-file + `rename`); S3 dropped |
+| D-3 | Multipart parsing limits & streaming for 100 MB uploads in a CGI process | **decided 2026-07-18** — `00MPARC0` buffers the body via `read(2)` and stages the file part to disk; 413 pre-check on `CONTENT_LENGTH`. A future streaming refinement can avoid the full in-memory body |
+| D-4 | Crypto for SHA-256/HMAC: libcrypto via `CALL` vs. own implementation | leaning libcrypto; interim: `sha256sum` CLI in `00MPARC0` |
 | D-5 | Circuit-breaker parity for the AI path: shared state file vs. per-worker counter | open |
 | D-6 | Health/readiness contract replacement for the Spring actuator | proposal in §8 |
 | D-7 | RSS XML generation: template copybook vs. string build | open |

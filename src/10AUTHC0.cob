@@ -41,12 +41,15 @@ LINKAGE SECTION.
 01 A-USER-ID            PIC X(36).
 01 A-ADMIN              PIC X.
 01 A-ORG-ID             PIC X(36).
+*> the audited resource id (document id for DOCUMENT decisions, the
+*> org-unit id itself for ORG_UNIT decisions)
+01 A-RID                PIC X(36).
 01 A-NEEDED             PIC X.
 01 A-ACTION             PIC X(10).
 01 A-RTYPE              PIC X(20).
 01 A-AUDIT              PIC X.
 01 A-RESULT             PIC X.
-PROCEDURE DIVISION USING A-USER-ID A-ADMIN A-ORG-ID A-NEEDED
+PROCEDURE DIVISION USING A-USER-ID A-ADMIN A-ORG-ID A-RID A-NEEDED
                          A-ACTION A-RTYPE A-AUDIT A-RESULT.
 MAIN.
     IF A-ADMIN = "Y"
@@ -128,6 +131,6 @@ AUDIT-DECISION.
             MOVE "DENY" TO WS-EFFECT
         END-IF
         CALL "10AUDTE0" USING A-USER-ID A-ACTION A-RTYPE
-                              A-ORG-ID WS-EFFECT
+                              A-RID WS-EFFECT
     END-IF.
 END PROGRAM "10AUTHC0".

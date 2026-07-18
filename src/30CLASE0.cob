@@ -1,0 +1,140 @@
+>>SOURCE FORMAT FREE
+*> 30CLASE0 — documents: file access for the DOCCLASS indexed file
+*> (document_class, the controlled vocabulary). Ops: GET by id · NAME
+*> by unique upper-case code · WRT · REW · DEL · ALL (table, sorted by
+*> name via the alternate-key scan). L-RET: 00 · 23 · 22 · 9x.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "30CLASE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT CLAS-FILE ASSIGN TO "DOCCLASS"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS CL-ID
+        ALTERNATE RECORD KEY IS CL-NAME
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD CLAS-FILE.
+COPY "30CLASR0.cpy" REPLACING ==:PFX:== BY ==CL==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "30CLASR0.cpy" REPLACING ==:PFX:== BY ==L-CL==.
+01 L-CL-TABLE.
+   05 L-CL-COUNT        PIC 9(4).
+   05 L-CL-ROW OCCURS 100.
+      10 L-CL-ROW-ID   PIC X(36).
+      10 L-CL-ROW-NAME PIC X(50).
+      10 L-CL-ROW-DESC PIC X(200).
+PROCEDURE DIVISION USING L-OP L-RET L-CL-REC L-CL-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "NAME" PERFORM DO-BY-NAME
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "REW " PERFORM DO-REWRITE
+        WHEN "DEL " PERFORM DO-DELETE
+        WHEN "ALL " PERFORM DO-ALL
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE CLAS-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O CLAS-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT CLAS-FILE
+        CLOSE CLAS-FILE
+        OPEN I-O CLAS-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-CL-ID TO CL-ID
+    READ CLAS-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE CL-REC TO L-CL-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-BY-NAME.
+    MOVE L-CL-NAME TO CL-NAME
+    READ CLAS-FILE KEY IS CL-NAME
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE CL-REC TO L-CL-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-WRITE.
+    MOVE L-CL-REC TO CL-REC
+    WRITE CL-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-REWRITE.
+    MOVE L-CL-ID TO CL-ID
+    READ CLAS-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        MOVE L-CL-REC TO CL-REC
+        REWRITE CL-REC
+        IF WS-FS = "00" OR WS-FS = "02"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-DELETE.
+    MOVE L-CL-ID TO CL-ID
+    READ CLAS-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        DELETE CLAS-FILE
+        IF WS-FS = "00"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-ALL.
+    MOVE 0 TO L-CL-COUNT
+    MOVE LOW-VALUES TO CL-NAME
+    START CLAS-FILE KEY IS >= CL-NAME
+    IF WS-FS = "00"
+        PERFORM UNTIL L-CL-COUNT >= 100
+            READ CLAS-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            ADD 1 TO L-CL-COUNT
+            MOVE CL-ID   TO L-CL-ROW-ID (L-CL-COUNT)
+            MOVE CL-NAME TO L-CL-ROW-NAME (L-CL-COUNT)
+            MOVE CL-DESC TO L-CL-ROW-DESC (L-CL-COUNT)
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+END PROGRAM "30CLASE0".

@@ -2,8 +2,10 @@
 *> 90BOOTW0 — operations: container bootstrap. Ensures every VSAM
 *> indexed file exists before Apache starts serving CGI requests (the
 *> entity programs auto-create on status 35; probing them here removes
-*> the concurrent-first-request race) and writes one system audit row
-*> marking the boot. Runs as the same user as the CGI processes.
+*> the concurrent-first-request race), verifies the object store base
+*> directory is writable, seeds the document-class vocabulary when
+*> empty, and writes one system audit row marking the boot. Runs as the
+*> same user as the CGI processes.
 IDENTIFICATION DIVISION.
 PROGRAM-ID. "90BOOTW0".
 DATA DIVISION.
@@ -12,6 +14,7 @@ WORKING-STORAGE SECTION.
 01 WS-RET               PIC X(2).
 01 WS-PROBE-ID          PIC X(36)
        VALUE "00000000-0000-0000-0000-000000000000".
+*> organization files (iteration 2)
 COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==WS-OU==.
 01 WS-OU-TABLE.
    05 WS-OU-COUNT       PIC 9(4).
@@ -29,6 +32,77 @@ COPY "20MEMBR0.cpy" REPLACING ==:PFX:== BY ==WS-MB==.
       10 WS-MB-ROW-USER PIC X(36).
       10 WS-MB-ROW-ORG  PIC X(36).
       10 WS-MB-ROW-ROLE PIC X(10).
+*> documents files (iteration 3)
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==WS-DC==.
+01 WS-DC-TABLE.
+   05 WS-DC-COUNT       PIC 9(4).
+   05 WS-DC-ROW OCCURS 300.
+      10 FILLER         PIC X(376).
+COPY "30STATR0.cpy" REPLACING ==:PFX:== BY ==WS-DS==.
+COPY "30RENDR0.cpy" REPLACING ==:PFX:== BY ==WS-RD==.
+01 WS-RD-TABLE.
+   05 WS-RD-COUNT       PIC 9(4).
+   05 WS-RD-ROW OCCURS 10.
+      10 FILLER         PIC X(202).
+COPY "30AKTER0.cpy" REPLACING ==:PFX:== BY ==WS-AK==.
+01 WS-AK-TABLE.
+   05 WS-AK-COUNT       PIC 9(4).
+   05 WS-AK-ROW OCCURS 300.
+      10 FILLER         PIC X(272).
+COPY "30METAR0.cpy" REPLACING ==:PFX:== BY ==WS-ME==.
+COPY "30FPRFR0.cpy" REPLACING ==:PFX:== BY ==WS-FP==.
+01 WS-FP-TABLE.
+   05 WS-FP-COUNT       PIC 9(4).
+   05 WS-FP-ROW OCCURS 300.
+      10 FILLER         PIC X(36).
+COPY "30ORDBR0.cpy" REPLACING ==:PFX:== BY ==WS-OB==.
+01 WS-OB-TABLE.
+   05 WS-OB-COUNT       PIC 9(4).
+   05 WS-OB-ROW OCCURS 50.
+      10 FILLER         PIC X(300).
+COPY "30INTNR0.cpy" REPLACING ==:PFX:== BY ==WS-DI==.
+COPY "30CLASR0.cpy" REPLACING ==:PFX:== BY ==WS-CL==.
+01 WS-CL-TABLE.
+   05 WS-CL-COUNT       PIC 9(4).
+   05 WS-CL-ROW OCCURS 100.
+      10 WS-CL-ROW-ID   PIC X(36).
+      10 WS-CL-ROW-NAME PIC X(50).
+      10 WS-CL-ROW-DESC PIC X(200).
+COPY "50JOBSR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
+*> object store interface
+01 WS-S-OP              PIC X(4).
+01 WS-S-RET             PIC X(2).
+01 WS-S-KEY             PIC X(200).
+01 WS-S-SRC             PIC X(512).
+01 WS-S-PATH            PIC X(512).
+*> seed data
+01 WS-UUID              PIC X(36).
+01 WS-EPOCH             PIC 9(13).
+01 WS-SEED-I            PIC 9(2) COMP.
+01 WS-SEED-TABLE.
+   05 FILLER PIC X(50) VALUE "RECHNUNG".
+   05 FILLER PIC X(120) VALUE
+      "Rechnungen, Gutschriften und Zahlungsaufforderungen".
+   05 FILLER PIC X(50) VALUE "VERTRAG".
+   05 FILLER PIC X(120) VALUE
+      "Vertraege, Vertragsaenderungen und Kuendigungen".
+   05 FILLER PIC X(50) VALUE "ANTRAG".
+   05 FILLER PIC X(120) VALUE
+      "Antraege und Antragsformulare von Buergern oder Mitarbeitern".
+   05 FILLER PIC X(50) VALUE "BESCHEID".
+   05 FILLER PIC X(120) VALUE
+      "Behoerdliche Bescheide und foermliche Entscheidungen".
+   05 FILLER PIC X(50) VALUE "BERICHT".
+   05 FILLER PIC X(120) VALUE
+      "Berichte, Protokolle und Gutachten".
+   05 FILLER PIC X(50) VALUE "SONSTIGES".
+   05 FILLER PIC X(120) VALUE
+      "Alle Dokumente, die in keine andere Klasse passen".
+01 WS-SEED-R REDEFINES WS-SEED-TABLE.
+   05 WS-SEED OCCURS 6.
+      10 WS-SEED-NAME  PIC X(50).
+      10 WS-SEED-DESC  PIC X(120).
+*> audit + status
 01 WS-AUD-USER          PIC X(36) VALUE "system".
 01 WS-AUD-ACTION        PIC X(10) VALUE "BOOT".
 01 WS-AUD-RTYPE         PIC X(20) VALUE "system".
@@ -55,6 +129,64 @@ MAIN.
     CALL "20MEMBE0" USING WS-OP WS-RET WS-MB-REC WS-MB-TABLE
     PERFORM CHECK-PROBE
 
+    MOVE SPACES TO WS-DC-REC
+    MOVE WS-PROBE-ID TO WS-DC-ID
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-DS-REC
+    MOVE WS-PROBE-ID TO WS-DS-DOC
+    CALL "30STATE0" USING WS-OP WS-RET WS-DS-REC
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-RD-REC
+    MOVE WS-PROBE-ID TO WS-RD-DOC
+    MOVE "BYDC" TO WS-OP
+    CALL "30RENDE0" USING WS-OP WS-RET WS-RD-REC WS-RD-TABLE
+    PERFORM CHECK-PROBE
+    MOVE "GET " TO WS-OP
+
+    MOVE SPACES TO WS-AK-REC
+    MOVE WS-PROBE-ID TO WS-AK-ID
+    CALL "30AKTEE0" USING WS-OP WS-RET WS-AK-REC WS-AK-TABLE
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-ME-REC
+    MOVE WS-PROBE-ID TO WS-ME-DOC
+    CALL "30METAE0" USING WS-OP WS-RET WS-ME-REC
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-FP-REC
+    MOVE WS-PROBE-ID TO WS-FP-DOC
+    CALL "30FPRFE0" USING WS-OP WS-RET WS-FP-REC WS-FP-TABLE
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-OB-REC
+    MOVE WS-PROBE-ID TO WS-OB-DOC
+    MOVE "BYDC" TO WS-OP
+    CALL "30ORDBE0" USING WS-OP WS-RET WS-OB-REC WS-OB-TABLE
+    PERFORM CHECK-PROBE
+    MOVE "GET " TO WS-OP
+
+    MOVE SPACES TO WS-DI-REC
+    MOVE WS-PROBE-ID TO WS-DI-DOC
+    CALL "30INTNE0" USING WS-OP WS-RET WS-DI-REC
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-CL-REC
+    MOVE WS-PROBE-ID TO WS-CL-ID
+    CALL "30CLASE0" USING WS-OP WS-RET WS-CL-REC WS-CL-TABLE
+    PERFORM CHECK-PROBE
+
+    MOVE SPACES TO WS-JB-REC
+    MOVE WS-PROBE-ID TO WS-JB-DOC
+    MOVE "DGET" TO WS-OP
+    CALL "50JOBSE0" USING WS-OP WS-RET WS-JB-REC
+    PERFORM CHECK-PROBE
+
+    PERFORM VERIFY-OBJECT-STORE
+    PERFORM SEED-DOCUMENT-CLASSES
+
     CALL "10AUDTE0" USING WS-AUD-USER WS-AUD-ACTION WS-AUD-RTYPE
                           WS-AUD-RID WS-AUD-EFFECT
 
@@ -65,6 +197,36 @@ MAIN.
         DISPLAY "90BOOTW0: ok"
     END-IF
     STOP RUN.
+
+VERIFY-OBJECT-STORE.
+    MOVE "VRFY" TO WS-S-OP
+    MOVE SPACES TO WS-S-KEY WS-S-SRC WS-S-PATH
+    CALL "00STORC0" USING WS-S-OP WS-S-RET WS-S-KEY WS-S-SRC
+        WS-S-PATH
+    IF WS-S-RET NOT = "00"
+        DISPLAY "90BOOTW0: object store unavailable, ret=" WS-S-RET
+        MOVE "Y" TO WS-FAILED
+    END-IF.
+
+SEED-DOCUMENT-CLASSES.
+    *> seed only when the vocabulary is empty (idempotent restart)
+    MOVE SPACES TO WS-CL-REC
+    MOVE "ALL " TO WS-OP
+    CALL "30CLASE0" USING WS-OP WS-RET WS-CL-REC WS-CL-TABLE
+    IF WS-CL-COUNT > 0
+        EXIT PARAGRAPH
+    END-IF
+    DISPLAY "90BOOTW0: seeding document classes"
+    PERFORM VARYING WS-SEED-I FROM 1 BY 1 UNTIL WS-SEED-I > 6
+        CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+        MOVE SPACES TO WS-CL-REC
+        MOVE WS-UUID TO WS-CL-ID
+        MOVE WS-SEED-NAME (WS-SEED-I) TO WS-CL-NAME
+        MOVE WS-SEED-DESC (WS-SEED-I) TO WS-CL-DESC
+        MOVE WS-EPOCH TO WS-CL-CREATED
+        MOVE "WRT " TO WS-OP
+        CALL "30CLASE0" USING WS-OP WS-RET WS-CL-REC WS-CL-TABLE
+    END-PERFORM.
 
 CHECK-PROBE.
     IF WS-RET NOT = "00" AND WS-RET NOT = "23"
