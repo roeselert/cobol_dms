@@ -377,6 +377,10 @@ DO-FILE.
     END-IF
     MOVE "type" TO WS-QP-WANT
     PERFORM FIND-QP
+    *> default PDF_A kept as a legacy alias for frontend compatibility;
+    *> OCR-only conversion (D-9) produces no PDF_A rendition, so the
+    *> selection below falls back to ORIGINAL. Valid types: ORIGINAL,
+    *> TEXT (PDF_A accepted but always resolves to ORIGINAL).
     IF WS-QP-VAL = SPACES
         MOVE "PDF_A" TO WS-TYPE-PARAM
     ELSE

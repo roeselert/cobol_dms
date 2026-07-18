@@ -253,7 +253,11 @@ other type ⇒ 415; see [`TARGET-ARCHITECTURE.md`](TARGET-ARCHITECTURE.md).*
 - S3 object store + SQLite-to-bucket backup are cloud-specific conveniences.
 - Multi-format intake (docx/images/eml via the LibreOffice and image-OCR paths of the
   conversion service) is **dropped in the migration target** — PDF-only intake removes
-  the LibreOffice dependency and the image pipeline entirely.
+  the LibreOffice dependency and the image pipeline entirely (target decision D-8).
+- **PDF/A normalization is also dropped in the target** (D-9): since every input is
+  already PDF, the conversion step only OCRs to extract text. The target keeps just the
+  `ORIGINAL` and `TEXT` renditions (no `PDF_A`), drops the ghostscript fallback, and
+  sends only the OCR text to the AI — see [`TARGET-ARCHITECTURE.md`](TARGET-ARCHITECTURE.md) §6.
 
 ## 12. Glossary
 

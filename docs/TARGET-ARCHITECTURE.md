@@ -16,9 +16,9 @@ graph TD
     Boundaries -->|CALL| Controls([control programs])
     Controls -->|CALL| Entities([entity programs<br>VSAM file access])
     Entities --> VSAM[(GnuCOBOL indexed files<br>VSAM KSDS style)]
-    Controls --> Store[(Filesystem object store<br>originals · pdfa · text)]
+    Controls --> Store[(Filesystem object store<br>originals · text)]
     Worker([50JOBSW0 worker daemon]) -->|claim/lease| VSAM
-    Worker -->|CALL SYSTEM| Tools([ocrmypdf · gs · pdftotext])
+    Worker -->|CALL SYSTEM| Tools([ocrmypdf OCR → text])
     Worker -->|CALL| Curl([60CURLC0 libcurl wrapper])
     Curl -->|HTTPS| AI([OpenAI-compatible API])
     IdP([OIDC IdP]) -.->|mod_auth_openidc| Apache
@@ -80,7 +80,7 @@ Flat `src/`, names per the `NNMMMMLS` convention in `CLAUDE.md`:
 | `50JOBSB0.cob` | `JobsController` |
 | `50JOBSE0.cob` | job queue file access (claim, lease, retry) |
 | `50JOBSW0.cob` | `JobDispatcher` + scheduler (daemon) |
-| `50CONVC0.cob` | Python conversion service, **PDF ladder only**: ocrmypdf → ghostscript → passthrough/fail via `CALL "SYSTEM"`, pdftotext for text, temp files under the data dir — no LibreOffice, no image path (PDF-only intake, D-8) |
+| `50CONVC0.cob` | Conversion, **OCR-only** (D-9): ocrmypdf OCR via `CALL "SYSTEM"` produces the `TEXT` rendition, temp files under the data dir — no PDF/A, no ghostscript, no LibreOffice, no image path (PDF-only intake, D-8) |
 | `60EXTRC0.cob` | Python extraction service: prompt assembly from catalogs, response parsing, suggestion validation |
 | `60CURLC0.cob` | httpx: libcurl wrapper (`curl_easy_*` via `CALL`) |
 | `60INTSB0/E0`, `60ORDNB0/E0` | intent + Ordnungsbegriff catalog REST/files |
@@ -117,9 +117,11 @@ and unique constraints. Fixed-length records; timestamps stay epoch millis
 | `AUDITLOG` | id | timestamp (dups) |
 
 **Intake rule (PDF-only, D-8)**: upload validation accepts exactly one MIME type —
-`application/pdf` (declared MIME or `.pdf` extension); everything else ⇒ 415. As a
-consequence `RENDTION.producer` values shrink to
-`upload | ocrmypdf | ghostscript | passthrough`.
+`application/pdf` (declared MIME or `.pdf` extension); everything else ⇒ 415. With
+OCR-only conversion (D-9) the rendition **type** set is just `ORIGINAL` + `TEXT` (no
+`PDF_A`), and `RENDTION.producer` values shrink to `upload | ocrmypdf`. Downloads serve
+`ORIGINAL` (the default `type=PDF_A` request gracefully falls back to it, since no
+PDF/A rendition is ever produced).
 
 Rules carried over: `DOCORDNB.type-name` stays a snapshot (no referential check);
 `AUDITLOG.user-id` is never validated against `USERS`; metadata `version` is
@@ -140,10 +142,10 @@ filters by the caller's visible org units **inside the scan** (ACL parity with S
 and ranks by hit count. A `DELETE`+rewrite per document keeps reindexing idempotent.
 Prefix search via key START; no stemming (parity: FTS5 default tokenizer ≈ same level).
 
-**Object store**: filesystem only — same keys (`originals/{id}/original`,
-`renditions/{id}/pdfa.pdf`, `renditions/{id}/text.txt`) under the data dir. Write =
-temp file + `rename()` + fsync for the durable-before-metadata guarantee; unwritable
-store ⇒ 503 and no metadata, exactly as today. (S3 support: open decision D-2.)
+**Object store**: filesystem only — keys `originals/{id}/original` and (from the
+conversion worker) `renditions/{id}/text.txt`; no `pdfa.pdf` (OCR-only, D-9). Under the
+data dir. Write = temp file + `rename()` for the durable-before-metadata guarantee;
+unwritable store ⇒ 503 and no metadata, exactly as today. (S3 dropped, D-2.)
 
 ## 5. Security in the target
 
@@ -160,21 +162,21 @@ store ⇒ 503 and no metadata, exactly as today. (S3 support: open decision D-2.
 
 ## 6. The migrated Python services
 
-- **Conversion (`50CONVC0`)**: only the PDF normalization ladder of
-  `services/conversion/app/convert.py` (`_normalize_pdf`) survives — ocrmypdf
-  (`--skip-text`, PDF/A output, `producer=ocrmypdf`), fallback ghostscript `-dPDFA=2`
-  (`producer=ghostscript`); toolchain present but file rejected (corrupt/encrypted
-  PDF) ⇒ job failure; no toolchain at all ⇒ `passthrough` with warning; `pdftotext`
-  for the text. The LibreOffice and image-OCR paths are **not migrated** (PDF-only
-  intake, D-8). Tool timeouts ⇒ job failure (worker retry), not 504 (the HTTP hop is
-  gone — the 504 path remains only in the API error table for parity of documented
-  codes).
-- **Extraction (`60EXTRC0` + `60CURLC0`)**: prompt built from the DB catalogs (classes,
-  intents + fields, active Ordnungsbegriff types) exactly as `prompt.py`; document
-  transport modes `text` (default, 100 000-char cap) or `file` (inline PDF) — the
-  image data-URL transport is dropped with PDF-only intake (D-8);
-  `response_format: json_object`; parse + validate the model's JSON against the
-  catalogs as `parsing.py` does. Unconfigured (`DMS_AI_TOKEN` empty) ⇒ skip ⇒
+- **Conversion (`50CONVC0`) — OCR-only (D-9)**: the PDF/A normalization of
+  `services/conversion/app/convert.py` is **not migrated**. The step runs ocrmypdf's
+  OCR (`--sidecar` to capture the text, e.g. `ocrmypdf --skip-text --sidecar out.txt`
+  so a born-digital text layer is reused and only image pages are OCR'd) and stores the
+  result as the `TEXT` rendition (`producer=ocrmypdf`); no PDF/A output, no ghostscript
+  fallback, no `passthrough`, no LibreOffice/image path. A corrupt/undecodable PDF or a
+  tool timeout ⇒ job failure (worker retry), not 504 (the HTTP hop is gone — the 504
+  path remains only in the API error table for parity of documented codes).
+- **Extraction (`60EXTRC0` + `60CURLC0`) — text-only (D-9)**: prompt built from the DB
+  catalogs (classes, intents + fields, active Ordnungsbegriff types) exactly as
+  `prompt.py`; the document is always sent as the **OCR text** (100 000-char cap) — the
+  `file` (inline PDF) and image data-URL transport modes are dropped, so
+  `DMS_AI_DOCUMENT_MODE` goes away; `response_format: json_object`; parse + validate the
+  model's JSON against the catalogs as `parsing.py` does. Unconfigured (`DMS_AI_TOKEN`
+  empty) ⇒ skip ⇒
   `MANUAL_INDEXING`; transport/HTTP/parse errors ⇒ retry (3×, then give up for this
   run) ⇒ `REVIEW`. A COBOL state counter replaces the resilience4j circuit breaker
   (decision D-5).
@@ -196,8 +198,9 @@ Keep `index.html`, `js/` views, `api.js` contract untouched except styling hooks
 `DMS_DATA_DIR`, `DMS_SECURITY_MODE` (`oidc`|`dev`), `DMS_BOOTSTRAP_ADMINS`,
 `DMS_UPLOAD_MAX_BYTES` (104857600), worker knobs (`DMS_WORKER_*`: poll 2000 ms,
 batch 2, max attempts 5, backoff base 5000 ms, lease 300 s), `DMS_AI_URL`,
-`DMS_AI_TOKEN`, `DMS_AI_MODEL`, `DMS_AI_DOCUMENT_MODE`, `DMS_FEED_TOKEN_SECRET`,
-`DMS_FEED_TOKEN_TTL_DAYS`, `DMS_BACKUP_*`. Health endpoint `GET /api/v1/health`
+`DMS_AI_TOKEN`, `DMS_AI_MODEL` (no `DMS_AI_DOCUMENT_MODE` — text-only, D-9),
+`DMS_FEED_TOKEN_SECRET`, `DMS_FEED_TOKEN_TTL_DAYS`, `DMS_BACKUP_*`. Health endpoint
+`GET /api/v1/health`
 (worker heartbeat file + store writability + files openable) replaces the actuator
 (decision D-6).
 
@@ -243,7 +246,9 @@ batch 2, max attempts 5, backoff base 5000 ms, lease 300 s), `DMS_AI_URL`,
    - **Deferred:** deleting an org unit that still owns documents/Akten should be 409;
      the org-control delete guard currently checks only sub-units and members (the
      cross-BC document/akte count lands with the search index in iteration 5).
-4. conversion: job files, worker daemon, external tools in-process.
+4. conversion: worker daemon (job claim/lease/retry/backoff) driving **OCR-only**
+   (ocrmypdf) in-process to produce the `TEXT` rendition; RECEIVED → CONVERTING → READY
+   (no PDF/A, D-9).
 5. aiextraction: catalogs, libcurl client, prompt/parse; search: indexer + query.
 6. feeds, backup/bootstrap, green-screen re-skin, parity test pass; decommission
    Java + Python + SQLite.
@@ -263,3 +268,4 @@ the parity checklist in `CLAUDE.md` gates every step.
 | D-6 | Health/readiness contract replacement for the Spring actuator | proposal in §8 |
 | D-7 | RSS XML generation: template copybook vs. string build | open |
 | D-8 | **PDF-only intake**: only `application/pdf` accepted (415 otherwise); LibreOffice and the image-OCR path are out of migration scope | **decided 2026-07-17** |
+| D-9 | **OCR-only conversion, text-only AI**: input is always PDF, so no PDF/A normalization — the conversion step just OCRs (ocrmypdf) to the `TEXT` rendition (no ghostscript/passthrough). Rendition types = `ORIGINAL` + `TEXT`; AI receives only the OCR text (`DMS_AI_DOCUMENT_MODE` dropped) | **decided 2026-07-18** |

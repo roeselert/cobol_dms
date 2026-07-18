@@ -1,8 +1,8 @@
 *> 30RENDR0.cpy — rendition record (VSAM KSDS RENDTION).
 *> Primary key :PFX:-ID; alternate keys :PFX:-DOCTYPE (group doc+type,
 *> unique — mirrors UNIQUE(document_id, type)) and :PFX:-DOC (dups).
-*> Types: ORIGINAL | PDF_A | TEXT. Producers (PDF-only intake, D-8):
-*> upload | ocrmypdf | ghostscript | passthrough.
+*> Types: ORIGINAL | TEXT (OCR-only conversion, D-9 — no PDF_A).
+*> Producers: upload | ocrmypdf.
 01 :PFX:-REC.
    05 :PFX:-ID          PIC X(36).
    05 :PFX:-DOCTYPE.

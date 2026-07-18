@@ -36,9 +36,10 @@ up to date as the migration proceeds.
    error mapping) is strictly **separate from business logic**. Business boundary
    programs never touch CGI variables directly.
 4. **Migrate the Python services to GNU COBOL too**, and integrate them **in-process
-   (direct CALL), not as HTTP services**. The conversion toolchain keeps invoking the
-   same external CLI tools (ocrmypdf, gs, pdftotext — libreoffice drops out with
-   rule 8); the extraction logic (prompt assembly, response parsing) becomes COBOL.
+   (direct CALL), not as HTTP services**. The conversion step is **OCR-only** (rule 8):
+   it invokes ocrmypdf's OCR to produce the plain text for indexing/AI — no ghostscript,
+   no LibreOffice. The extraction logic (prompt assembly, response parsing) becomes
+   COBOL and receives **only the OCR text** (rule 8).
 5. **VSAM-style storage, no SQLite.** All tables move to GnuCOBOL
    `ORGANIZATION IS INDEXED` files (VSAM KSDS equivalent) with primary and alternate
    record keys. No SQL anywhere. SQLite FTS5 has no VSAM equivalent — full-text search
@@ -49,11 +50,14 @@ up to date as the migration proceeds.
 7. **One flat source directory** (`src/`) for all COBOL sources and copybooks.
    **File names are max 12 characters** including extension. The naming syntax below
    encodes business-component ordering.
-8. **PDF is the only accepted input format.** Uploads other than `application/pdf`
-   are rejected with 415 (deliberate simplification vs. the as-is system, which also
-   takes docx/images/eml). The conversion pipeline therefore needs no LibreOffice and
-   no image-OCR path — the toolchain is ocrmypdf (OCR + PDF/A) with a ghostscript
-   fallback, plus pdftotext.
+8. **PDF is the only accepted input format, OCR-only conversion.** Uploads other than
+   `application/pdf` are rejected with 415 (deliberate simplification vs. the as-is
+   system, which also takes docx/images/eml). Because the input is always PDF the
+   conversion step does **no PDF/A normalization** — its only job is **OCR** to extract
+   the plain text. No ghostscript, no LibreOffice, no image path. Renditions are
+   therefore just `ORIGINAL` (the uploaded PDF, always what downloads serve) and `TEXT`
+   (the OCR text); there is no `PDF_A` rendition. **AI extraction consumes only the OCR
+   text** (no PDF/file or image transport mode).
 9. **Iterations** (status in `docs/TARGET-ARCHITECTURE.md` §9): iteration 1 was
    documentation only; iteration 2 (done) delivered the platform layer + the
    organization BC slice behind Apache CGI, containerized and CI-smoked; iteration 3
@@ -100,12 +104,13 @@ Examples: `00HTTPC0.cob` (CGI/HTTP layer), `00JSONC0.cob` (JSON parse/emit),
 - **CGI dispatcher** (`00HTTPC0`): routes `/api/v1/...` to boundary programs.
 - **Worker daemon** (`50JOBSW0`): long-running GnuCOBOL process polling the VSAM job
   queue file — replaces the Spring scheduler; same claim/lease/retry/backoff semantics.
-  Conversion tools invoked in-process: ocrmypdf, gs, pdftotext (PDF-only intake — no
-  libreoffice).
-- **Data**: VSAM indexed files under a data directory; original/PDF-A/text binaries in
-  the filesystem object store (S3 support dropped or deferred — open decision).
+  Conversion is **OCR-only** in-process: ocrmypdf's OCR yields the text (no ghostscript,
+  no libreoffice — PDF-only intake, rule 8).
+- **Data**: VSAM indexed files under a data directory; original/text binaries in
+  the filesystem object store (S3 support dropped — `00STORC0`).
 - **LLM**: libcurl from COBOL, provider config via environment
-  (`DMS_AI_URL`/`DMS_AI_TOKEN`/`DMS_AI_MODEL`), JSON-object response contract unchanged.
+  (`DMS_AI_URL`/`DMS_AI_TOKEN`/`DMS_AI_MODEL`), JSON-object response contract unchanged;
+  the document is sent as **OCR text only** (no PDF/file or image mode — rule 8).
 
 ## Domain language (keep the German terms)
 
@@ -117,9 +122,10 @@ SONSTIGES), extraction intents with fields. Do not translate these in code or UI
 ## Invariants to preserve (behavior parity checklist)
 
 - Binary is durably stored **before** any metadata is written; storage down ⇒ 503, no orphans.
-- Ingest pipeline: upload → RECEIVED → queue job → CONVERTING → PDF/A + OCR text →
-  optional AI suggestions → index → READY; terminal FAILED after max attempts;
-  lease-based re-queue of crashed jobs; reprocess is idempotent (deterministic storage keys).
+- Ingest pipeline: upload → RECEIVED → queue job → CONVERTING → OCR text →
+  optional AI suggestions (on that text) → index → READY; terminal FAILED after max
+  attempts; lease-based re-queue of crashed jobs; reprocess is idempotent (deterministic
+  storage keys). No PDF/A rendition — only `ORIGINAL` + `TEXT` (rule 8).
 - AI extraction is optional and degrades gracefully: unconfigured ⇒ `MANUAL_INDEXING`
   flag, errored ⇒ `REVIEW` flag — the document still becomes READY.
 - Authorization: roles ADMIN/EDITOR/VIEWER on org units, inherited down the org-unit
