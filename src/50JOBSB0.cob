@@ -1,0 +1,264 @@
+>>SOURCE FORMAT FREE
+*> 50JOBSB0 — conversion: REST boundary for /api/v1/jobs, mirroring
+*> JobsController. Read-only view of the durable conversion queue:
+*>   GET /v1/jobs?page&size   ACL-filtered, active work first.
+*> Visibility follows the job's document — the caller never learns of
+*> jobs (or document names) in org units they cannot read; bootstrap
+*> admins see every job. Ordered by status (QUEUED, RUNNING, DONE,
+*> FAILED) then document name, then paged — matching JobQueue.list.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "50JOBSB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "50JOBSR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
+COPY "50JCTLR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==WS-DC==.
+01 WS-DC-TABLE.
+   05 WS-DC-COUNT       PIC 9(4).
+   05 WS-DC-ROW OCCURS 300.
+      10 WS-DC-ROW-ID       PIC X(36).
+      10 WS-DC-ROW-NAME     PIC X(255).
+      10 WS-DC-ROW-UPLOADER PIC X(36).
+      10 WS-DC-ROW-ORG      PIC X(36).
+      10 WS-DC-ROW-INGEST   PIC 9(13).
+*> visible-and-sorted view assembled from the raw scan
+01 WS-VIS-TABLE.
+   05 WS-VIS-COUNT      PIC 9(4).
+   05 WS-VIS-ROW OCCURS 100.
+      10 WS-VIS-RANK       PIC 9.
+      10 WS-VIS-ID         PIC X(36).
+      10 WS-VIS-DOC        PIC X(36).
+      10 WS-VIS-NAME       PIC X(255).
+      10 WS-VIS-NAME-LOW   PIC X(255).
+      10 WS-VIS-STATUS     PIC X(10).
+      10 WS-VIS-ATTEMPTS   PIC 9(4).
+      10 WS-VIS-ERROR      PIC X(500).
+      10 WS-VIS-CREATED    PIC 9(13).
+01 WS-SWAP.
+   05 FILLER            PIC X(1461).
+*> authorization interface
+01 WS-A-USER            PIC X(36).
+01 WS-A-ADMIN           PIC X.
+01 WS-A-ORG             PIC X(36).
+01 WS-A-RID             PIC X(36).
+01 WS-A-NEEDED          PIC X.
+01 WS-A-ACTION          PIC X(10).
+01 WS-A-RTYPE           PIC X(20).
+01 WS-A-AUDIT           PIC X.
+01 WS-A-RESULT          PIC X.
+*> paging + emit
+01 WS-QP-WANT           PIC X(32).
+01 WS-QP-VAL            PIC X(64).
+01 WS-PAGE              PIC S9(6) COMP.
+01 WS-SIZE              PIC S9(6) COMP.
+01 WS-OFFSET            PIC 9(6) COMP.
+01 WS-EMITTED           PIC 9(6) COMP.
+01 WS-I                 PIC 9(4) COMP.
+01 WS-J                 PIC 9(4) COMP.
+01 WS-JSTART            PIC 9(4) COMP.
+01 WS-K                 PIC 9(4) COMP.
+01 WS-KSTART            PIC 9(6) COMP.
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-FIRST             PIC X.
+01 WS-ISO               PIC X(20).
+01 WS-ATT-Z             PIC Z(3)9.
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    EVALUATE TRUE
+        WHEN HX-METHOD = "GET" AND HX-SEG (3) = SPACES
+            PERFORM DO-LIST
+        WHEN OTHER
+            MOVE 405 TO HX-STATUS
+            MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+    END-EVALUATE
+    GOBACK.
+
+DO-LIST.
+    PERFORM READ-PAGING
+    *> 1) scan the whole queue
+    MOVE "SCAN" TO WS-OP
+    CALL "50JOBSE0" USING WS-OP WS-RET WS-JB-REC WS-JB-CTL
+    *> 2) keep only jobs on documents the caller may read
+    MOVE 0 TO WS-VIS-COUNT
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-JB-CT-COUNT
+        PERFORM COLLECT-VISIBLE
+    END-PERFORM
+    *> 3) order active work first, then by document name
+    PERFORM SORT-VISIBLE
+    *> 4) page + emit
+    PERFORM EMIT-PAGE.
+
+COLLECT-VISIBLE.
+    *> resolve the job's document for name + org (skip if it vanished)
+    MOVE SPACES TO WS-DC-REC
+    MOVE WS-JB-CT-DOC (WS-I) TO WS-DC-ID
+    MOVE "GET " TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    IF WS-RET NOT = "00"
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM CHECK-VISIBLE
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    IF WS-VIS-COUNT >= 100
+        EXIT PARAGRAPH
+    END-IF
+    ADD 1 TO WS-VIS-COUNT
+    MOVE WS-JB-CT-ID (WS-I)       TO WS-VIS-ID (WS-VIS-COUNT)
+    MOVE WS-JB-CT-DOC (WS-I)      TO WS-VIS-DOC (WS-VIS-COUNT)
+    MOVE WS-DC-NAME               TO WS-VIS-NAME (WS-VIS-COUNT)
+    MOVE FUNCTION LOWER-CASE (WS-DC-NAME)
+                                 TO WS-VIS-NAME-LOW (WS-VIS-COUNT)
+    MOVE WS-JB-CT-STATUS (WS-I)   TO WS-VIS-STATUS (WS-VIS-COUNT)
+    MOVE WS-JB-CT-ATTEMPTS (WS-I) TO WS-VIS-ATTEMPTS (WS-VIS-COUNT)
+    MOVE WS-JB-CT-ERROR (WS-I)    TO WS-VIS-ERROR (WS-VIS-COUNT)
+    MOVE WS-JB-CT-CREATED (WS-I)  TO WS-VIS-CREATED (WS-VIS-COUNT)
+    EVALUATE WS-JB-CT-STATUS (WS-I)
+        WHEN "QUEUED"  MOVE 1 TO WS-VIS-RANK (WS-VIS-COUNT)
+        WHEN "RUNNING" MOVE 2 TO WS-VIS-RANK (WS-VIS-COUNT)
+        WHEN "DONE"    MOVE 3 TO WS-VIS-RANK (WS-VIS-COUNT)
+        WHEN "FAILED"  MOVE 4 TO WS-VIS-RANK (WS-VIS-COUNT)
+        WHEN OTHER     MOVE 9 TO WS-VIS-RANK (WS-VIS-COUNT)
+    END-EVALUATE.
+
+CHECK-VISIBLE.
+    IF HX-USER-ADMIN = "Y"
+        MOVE "A" TO WS-A-RESULT
+    ELSE
+        MOVE HX-USER-ID TO WS-A-USER
+        MOVE HX-USER-ADMIN TO WS-A-ADMIN
+        MOVE WS-DC-ORG TO WS-A-ORG
+        MOVE WS-DC-ID TO WS-A-RID
+        MOVE "V" TO WS-A-NEEDED
+        MOVE "READ" TO WS-A-ACTION
+        MOVE "DOCUMENT" TO WS-A-RTYPE
+        MOVE "N" TO WS-A-AUDIT
+        CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG
+            WS-A-RID WS-A-NEEDED WS-A-ACTION WS-A-RTYPE
+            WS-A-AUDIT WS-A-RESULT
+    END-IF.
+
+SORT-VISIBLE.
+    *> selection sort on (rank, name-lower) — N<=100 (documented cap)
+    PERFORM VARYING WS-I FROM 1 BY 1
+            UNTIL WS-I >= WS-VIS-COUNT
+        COMPUTE WS-JSTART = WS-I + 1
+        PERFORM VARYING WS-J FROM WS-JSTART BY 1
+                UNTIL WS-J > WS-VIS-COUNT
+            IF WS-VIS-RANK (WS-J) < WS-VIS-RANK (WS-I)
+              OR (WS-VIS-RANK (WS-J) = WS-VIS-RANK (WS-I)
+                  AND WS-VIS-NAME-LOW (WS-J)
+                      < WS-VIS-NAME-LOW (WS-I))
+                MOVE WS-VIS-ROW (WS-I) TO WS-SWAP
+                MOVE WS-VIS-ROW (WS-J) TO WS-VIS-ROW (WS-I)
+                MOVE WS-SWAP TO WS-VIS-ROW (WS-J)
+            END-IF
+        END-PERFORM
+    END-PERFORM.
+
+EMIT-PAGE.
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    STRING "[" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE "Y" TO WS-FIRST
+    MOVE 0 TO WS-EMITTED
+    COMPUTE WS-KSTART = WS-OFFSET + 1
+    PERFORM VARYING WS-K FROM WS-KSTART BY 1
+            UNTIL WS-K > WS-VIS-COUNT OR WS-EMITTED >= WS-SIZE
+        IF WS-FIRST = "N"
+            STRING "," DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        END-IF
+        MOVE "N" TO WS-FIRST
+        PERFORM EMIT-JOB-DTO
+        ADD 1 TO WS-EMITTED
+    END-PERFORM
+    STRING "]" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS.
+
+EMIT-JOB-DTO.
+    STRING '{"id":"' FUNCTION TRIM (WS-VIS-ID (WS-K))
+           '","documentId":"' FUNCTION TRIM (WS-VIS-DOC (WS-K)) '"'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE WS-VIS-NAME (WS-K) TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING ',"documentName":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    STRING ',"status":"' FUNCTION TRIM (WS-VIS-STATUS (WS-K)) '"'
+           ',"attempts":' DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    PERFORM EMIT-ATTEMPTS
+    PERFORM EMIT-LAST-ERROR
+    CALL "00TIMEC0" USING WS-VIS-CREATED (WS-K) WS-ISO
+    STRING ',"createdAt":"' FUNCTION TRIM (WS-ISO) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+
+EMIT-ATTEMPTS.
+    *> zero-suppressed: JSON numbers must not carry leading zeros
+    MOVE WS-VIS-ATTEMPTS (WS-K) TO WS-ATT-Z
+    STRING FUNCTION TRIM (WS-ATT-Z) DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+
+EMIT-LAST-ERROR.
+    IF FUNCTION TRIM (WS-VIS-ERROR (WS-K)) = SPACES
+        STRING ',"lastError":null' DELIMITED BY SIZE
+            INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    ELSE
+        MOVE WS-VIS-ERROR (WS-K) TO WS-ESC-IN
+        CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+        STRING ',"lastError":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-IF.
+
+READ-PAGING.
+    MOVE "page" TO WS-QP-WANT
+    PERFORM FIND-QP
+    COMPUTE WS-PAGE = FUNCTION NUMVAL (WS-QP-VAL)
+    IF WS-QP-VAL = SPACES
+        MOVE 0 TO WS-PAGE
+    END-IF
+    IF WS-PAGE < 0
+        MOVE 0 TO WS-PAGE
+    END-IF
+    MOVE "size" TO WS-QP-WANT
+    PERFORM FIND-QP
+    COMPUTE WS-SIZE = FUNCTION NUMVAL (WS-QP-VAL)
+    IF WS-QP-VAL = SPACES
+        MOVE 50 TO WS-SIZE
+    END-IF
+    IF WS-SIZE < 1
+        MOVE 1 TO WS-SIZE
+    END-IF
+    IF WS-SIZE > 100
+        MOVE 100 TO WS-SIZE
+    END-IF
+    COMPUTE WS-OFFSET = WS-PAGE * WS-SIZE.
+
+FIND-QP.
+    MOVE SPACES TO WS-QP-VAL
+    PERFORM VARYING WS-J FROM 1 BY 1 UNTIL WS-J > HX-QP-COUNT
+        IF HX-QP-NAME (WS-J) = WS-QP-WANT
+            MOVE HX-QP-VALUE (WS-J) TO WS-QP-VAL
+        END-IF
+    END-PERFORM.
+END PROGRAM "50JOBSB0".

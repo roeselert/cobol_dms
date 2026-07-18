@@ -12,6 +12,14 @@ chown -R www-data:www-data "$DATA_DIR"
 
 su -s /bin/sh www-data -c "COB_FILE_PATH='$COB_FILE_PATH' /app/bin/dmsboot"
 
+# the ingest worker daemon (§7.5): a long-running GnuCOBOL process that
+# polls the VSAM job queue and drives OCR-only conversion in-process.
+# Runs as the CGI user so it shares ownership of the VSAM + object files;
+# reads the same DMS_DATA_DIR / DMS_WORKER_* / DMS_OCR_LANG env.
+su -s /bin/sh www-data -c "COB_FILE_PATH='$COB_FILE_PATH' \
+    DMS_DATA_DIR='$DATA_DIR' DMS_OCR_LANG='${DMS_OCR_LANG:-eng}' \
+    /app/bin/dmsworker" &
+
 . /etc/apache2/envvars
 # mod_cgid needs its socket directory before startup, or every CGI
 # request answers 503

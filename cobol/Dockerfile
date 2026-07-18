@@ -5,9 +5,14 @@
 # (libcob + BDB indexed files) ships with the gnucobol3 package.
 FROM ubuntu:24.04
 
+# gnucobol3 + apache/curl for the CGI runtime; ocrmypdf + tesseract
+# (+ German language data) and poppler-utils' pdftotext for the OCR-only
+# conversion worker (D-9). ocrmypdf pulls ghostscript/qpdf transitively
+# as its OCR engine — those are never invoked directly here (no PDF/A).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         gnucobol3 apache2 curl \
+        ocrmypdf tesseract-ocr tesseract-ocr-deu poppler-utils \
  && rm -rf /var/lib/apt/lists/*
 
 COPY src/ /build/src/
@@ -35,7 +40,12 @@ RUN mkdir -p /app/cgi-bin /app/bin \
         /build/src/30METAC0.cob \
         /build/src/30DOCSB0.cob /build/src/30METAB0.cob \
         /build/src/30AKTEB0.cob /build/src/30CLASB0.cob \
-        /build/src/30CONFB0.cob \
+        /build/src/30CONFB0.cob /build/src/50JOBSB0.cob \
+ && cobc -x -free -I /build/src -o /app/bin/dmsworker \
+        /build/src/50JOBSW0.cob /build/src/50CONVC0.cob \
+        /build/src/50JOBSE0.cob /build/src/30STATE0.cob \
+        /build/src/30RENDE0.cob /build/src/00STORC0.cob \
+        /build/src/00UUIDC0.cob \
  && cobc -x -free -I /build/src -o /app/bin/dmsboot \
         /build/src/90BOOTW0.cob \
         /build/src/00UUIDC0.cob /build/src/00STORC0.cob \
@@ -63,7 +73,14 @@ RUN a2enmod cgid env \
 ENV DMS_SECURITY_MODE=dev \
     DMS_BOOTSTRAP_ADMINS=admin@example.com \
     DMS_DATA_DIR=/data \
-    DMS_UPLOAD_MAX_BYTES=104857600
+    DMS_UPLOAD_MAX_BYTES=104857600 \
+    DMS_OCR_LANG=deu+eng \
+    DMS_WORKER_ENABLED=true \
+    DMS_WORKER_POLL_MILLIS=2000 \
+    DMS_WORKER_BATCH_SIZE=2 \
+    DMS_WORKER_MAX_ATTEMPTS=5 \
+    DMS_WORKER_BACKOFF_BASE_MILLIS=5000 \
+    DMS_WORKER_LEASE_SECONDS=300
 
 EXPOSE 7860
 VOLUME /data

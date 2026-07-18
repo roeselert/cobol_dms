@@ -163,13 +163,20 @@ unwritable store ⇒ 503 and no metadata, exactly as today. (S3 dropped, D-2.)
 ## 6. The migrated Python services
 
 - **Conversion (`50CONVC0`) — OCR-only (D-9)**: the PDF/A normalization of
-  `services/conversion/app/convert.py` is **not migrated**. The step runs ocrmypdf's
-  OCR (`--sidecar` to capture the text, e.g. `ocrmypdf --skip-text --sidecar out.txt`
-  so a born-digital text layer is reused and only image pages are OCR'd) and stores the
-  result as the `TEXT` rendition (`producer=ocrmypdf`); no PDF/A output, no ghostscript
-  fallback, no `passthrough`, no LibreOffice/image path. A corrupt/undecodable PDF or a
-  tool timeout ⇒ job failure (worker retry), not 504 (the HTTP hop is gone — the 504
-  path remains only in the API error table for parity of documented codes).
+  `services/conversion/app/convert.py` is **not migrated**. The step runs
+  `ocrmypdf --skip-text` on the stored `ORIGINAL` (a born-digital text layer is reused,
+  only image pages are OCR'd) to a scratch searchable PDF, then extracts plain text with
+  `pdftotext -layout` (the port of `textextract.py`); if ocrmypdf is unavailable or
+  rejects the file it falls back to `pdftotext` on the original. The text is stored
+  durably as `renditions/{id}/text.txt` and upserted as the `TEXT` rendition
+  (`producer=ocrmypdf`); the scratch PDF is discarded — **no PDF/A output, no ghostscript
+  fallback, no `passthrough`, no LibreOffice/image path**. Both tools run via
+  `CALL "SYSTEM"` with scratch files under `objects/tmp` (same filesystem as the store,
+  so the final `rename` is atomic — R-1). An empty result is valid (a scanned page whose
+  OCR yields nothing is still a success); a hard tool/storage failure ⇒ job failure
+  (worker retry / terminal FAILED), not 504 (the HTTP hop is gone — the 504 path remains
+  only in the API error table for parity of documented codes). `DMS_OCR_LANG`
+  (default `deu+eng` in the image) selects the Tesseract language data.
 - **Extraction (`60EXTRC0` + `60CURLC0`) — text-only (D-9)**: prompt built from the DB
   catalogs (classes, intents + fields, active Ordnungsbegriff types) exactly as
   `prompt.py`; the document is always sent as the **OCR text** (100 000-char cap) — the
@@ -196,8 +203,9 @@ Keep `index.html`, `js/` views, `api.js` contract untouched except styling hooks
 ## 8. Configuration (environment)
 
 `DMS_DATA_DIR`, `DMS_SECURITY_MODE` (`oidc`|`dev`), `DMS_BOOTSTRAP_ADMINS`,
-`DMS_UPLOAD_MAX_BYTES` (104857600), worker knobs (`DMS_WORKER_*`: poll 2000 ms,
-batch 2, max attempts 5, backoff base 5000 ms, lease 300 s), `DMS_AI_URL`,
+`DMS_UPLOAD_MAX_BYTES` (104857600), worker knobs (`DMS_WORKER_ENABLED` + `DMS_WORKER_*`:
+poll 2000 ms, batch 2, max attempts 5, backoff base 5000 ms, lease 300 s),
+`DMS_OCR_LANG` (Tesseract language data, default `deu+eng`), `DMS_AI_URL`,
 `DMS_AI_TOKEN`, `DMS_AI_MODEL` (no `DMS_AI_DOCUMENT_MODE` — text-only, D-9),
 `DMS_FEED_TOKEN_SECRET`, `DMS_FEED_TOKEN_TTL_DAYS`, `DMS_BACKUP_*`. Health endpoint
 `GET /api/v1/health`
@@ -246,9 +254,27 @@ batch 2, max attempts 5, backoff base 5000 ms, lease 300 s), `DMS_AI_URL`,
    - **Deferred:** deleting an org unit that still owns documents/Akten should be 409;
      the org-control delete guard currently checks only sub-units and members (the
      cross-BC document/akte count lands with the search index in iteration 5).
-4. conversion: worker daemon (job claim/lease/retry/backoff) driving **OCR-only**
-   (ocrmypdf) in-process to produce the `TEXT` rendition; RECEIVED → CONVERTING → READY
-   (no PDF/A, D-9).
+4. **conversion — done**: the in-process ingest worker daemon `50JOBSW0` (a
+   long-running GnuCOBOL process, launched by `start.sh` alongside Apache, replacing
+   the Spring scheduler) polls the durable `CONVJOB` queue and drives **OCR-only**
+   conversion per job. New claim/lease ops on the job entity `50JOBSE0` (`CLAM` find +
+   claim the earliest due `QUEUED` job — RUNNING, attempts+1, lease = now + lease·1000;
+   `SWEP` re-queue jobs whose lease expired while RUNNING — R-2; `DONE`/`FAIL`/`RQUE`
+   finish, terminal-fail, or retry-with-exponential-backoff; `SCAN` for the jobs view)
+   carried through a shared control block `50JCTLR0`. The conversion control `50CONVC0`
+   resolves the stored `ORIGINAL`, runs `ocrmypdf --skip-text` (born-digital PDFs pass
+   through, scanned pages gain a text layer) then `pdftotext -layout` to extract plain
+   text, stores `renditions/{id}/text.txt` (durable `rename`) and upserts the `TEXT`
+   rendition (producer `ocrmypdf`) — **no PDF/A, no ghostscript ladder** (D-9);
+   ghostscript is present only as ocrmypdf's transitive OCR engine, never invoked
+   directly. Status walks RECEIVED → CONVERTING → READY, terminal FAILED after
+   `DMS_WORKER_MAX_ATTEMPTS`. The read-only queue view `50JOBSB0` serves
+   `GET /api/v1/jobs` (ACL-filtered by the job's document, active work first). The
+   worker writes a `worker.heartbeat` file each poll. Extended smoke waits for an
+   upload to reach READY, asserts the `TEXT` rendition + downloadable OCR text +
+   `/jobs` DONE, and re-runs an idempotent reprocess. AI suggestions / `MANUAL_INDEXING`
+   / `REVIEW` flagging and search reindex arrive with iterations 6 / 5 respectively;
+   this iteration lands the document at READY with its text.
 5. aiextraction: catalogs, libcurl client, prompt/parse; search: indexer + query.
 6. feeds, backup/bootstrap, green-screen re-skin, parity test pass; decommission
    Java + Python + SQLite.

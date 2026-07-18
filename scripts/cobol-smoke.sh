@@ -100,12 +100,46 @@ DOC_ID=$(curl -sSf -X POST "${H_EDITOR[@]}" \
 echo "document: $DOC_ID"
 [ -n "$DOC_ID" ] && [ "$DOC_ID" != "null" ]
 DOC_JSON=$(curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID")
-echo "$DOC_JSON" | grep -q '"status":"RECEIVED"' || { echo "::error::not RECEIVED"; exit 1; }
+# the ingest worker may already have advanced the doc past RECEIVED
+echo "$DOC_JSON" | grep -qE '"status":"(RECEIVED|CONVERTING|READY)"' \
+  || { echo "::error::unexpected initial status"; exit 1; }
 echo "$DOC_JSON" | grep -q '"type":"ORIGINAL"' || { echo "::error::no ORIGINAL rendition"; exit 1; }
 echo "$DOC_JSON" | grep -q '"producer":"upload"' || { echo "::error::producer not upload"; exit 1; }
 EXPECT_SHA=$(sha256sum "$PDF" | cut -d' ' -f1)
 echo "$DOC_JSON" | grep -q "$EXPECT_SHA" || { echo "::error::checksum mismatch"; exit 1; }
 echo "upload OK"
+
+# ingest worker (§7.5): the queued job is claimed in-process and OCR-only
+# conversion drives RECEIVED -> CONVERTING -> READY, producing a TEXT
+# rendition (producer ocrmypdf, D-9). No PDF/A rendition is ever created.
+echo "waiting for conversion -> READY..."
+READY_JSON=""
+for _ in $(seq 1 60); do
+  READY_JSON=$(curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID")
+  echo "$READY_JSON" | grep -q '"status":"FAILED"' && { echo "::error::conversion FAILED"; exit 1; }
+  echo "$READY_JSON" | grep -q '"status":"READY"' && break
+  sleep 2
+done
+echo "$READY_JSON" | grep -q '"status":"READY"' || { echo "::error::document did not reach READY"; exit 1; }
+echo "$READY_JSON" | grep -q '"type":"TEXT"' || { echo "::error::no TEXT rendition"; exit 1; }
+echo "$READY_JSON" | grep -q '"producer":"ocrmypdf"' || { echo "::error::TEXT producer not ocrmypdf"; exit 1; }
+echo "$READY_JSON" | grep -q '"type":"PDF_A"' && { echo "::error::unexpected PDF_A rendition (D-9)"; exit 1; } || true
+echo "conversion -> READY OK"
+
+# the OCR text is downloadable and carries the document's text layer
+curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID/file?type=TEXT" -o /tmp/dl.txt
+[ -s /tmp/dl.txt ] || { echo "::error::OCR text is empty"; exit 1; }
+grep -qi "Smoketest" /tmp/dl.txt || { echo "::error::OCR text missing expected content"; exit 1; }
+echo "OCR text OK ($(wc -c </tmp/dl.txt) bytes)"
+
+# /jobs (ACL-scoped) shows this document's job as DONE
+JOBS=$(curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/jobs")
+echo "$JOBS" | jq -e --arg d "$DOC_ID" 'any(.[]; .documentId==$d and .status=="DONE")' >/dev/null \
+  || { echo "::error::/jobs does not show the job DONE"; exit 1; }
+# a stranger sees no jobs for this document (visibility follows the doc)
+curl -sSf "${H_NOBODY[@]}" "$BASE/api/v1/jobs" | grep -q "$DOC_ID" \
+  && { echo "::error::stranger sees job (ACL broken)"; exit 1; } || true
+echo "jobs endpoint OK"
 
 # non-PDF -> 415, empty -> 422 (PDF-only intake, D-8)
 printf 'hello' > /tmp/notes.txt
@@ -156,9 +190,20 @@ curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/akten/$AKTE_ID/documents" | grep -q "$D
   || { echo "::error::akte documents missing the document"; exit 1; }
 echo "akten OK"
 
-# reprocess -> 200, status back to RECEIVED
+# reprocess -> 200; the job is re-queued and the worker re-runs the
+# idempotent OCR conversion, landing the document back at READY. The
+# synchronous response reflects the pipeline restart (the worker may
+# already have re-claimed it by the time we re-read).
 curl -sSf -X POST "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID/reprocess" \
-  | grep -q '"status":"RECEIVED"' || { echo "::error::reprocess did not reset status"; exit 1; }
+  | grep -qE '"status":"(RECEIVED|CONVERTING|READY)"' \
+  || { echo "::error::reprocess did not restart the pipeline"; exit 1; }
+for _ in $(seq 1 60); do
+  curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID" \
+    | grep -q '"status":"READY"' && break
+  sleep 2
+done
+curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID" \
+  | grep -q '"status":"READY"' || { echo "::error::reprocess did not reach READY"; exit 1; }
 echo "reprocess OK"
 
 # ---- teardown: the empty org deletes cleanly (204) -----------------

@@ -96,6 +96,8 @@ MAIN.
             CALL "30DOCSB0" USING HTTP-EXCHANGE
         WHEN HX-SEG (2) = "akten"
             CALL "30AKTEB0" USING HTTP-EXCHANGE
+        WHEN HX-SEG (2) = "jobs"
+            CALL "50JOBSB0" USING HTTP-EXCHANGE
         WHEN HX-SEG (2) = "document-classes"
             CALL "30CLASB0" USING HTTP-EXCHANGE
         WHEN HX-SEG (2) = "config" AND HX-SEG (3) = SPACES

@@ -63,7 +63,11 @@ up to date as the migration proceeds.
    organization BC slice behind Apache CGI, containerized and CI-smoked; iteration 3
    (done) added the documents BC — object store, multipart upload (PDF-only), document
    list/get/download/reprocess, metadata + Aktenbildung, Akten, document classes,
-   `/config` — on ten new indexed files, extended-smoked in CI.
+   `/config` — on ten new indexed files, extended-smoked in CI; iteration 4 (done)
+   added the conversion BC — the in-process ingest worker daemon (`50JOBSW0`, job
+   claim/lease/retry/backoff) driving OCR-only conversion (`50CONVC0`: ocrmypdf +
+   pdftotext, no PDF/A) to the `TEXT` rendition, RECEIVED → CONVERTING → READY, plus
+   the `/jobs` queue view — extended-smoked (upload → READY, OCR text, `/jobs` DONE).
 
 ## Source file naming convention
 
