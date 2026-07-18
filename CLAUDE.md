@@ -73,7 +73,10 @@ up to date as the migration proceeds.
    `curl_easy_*`), three seeded catalogs (intents/fields/Ordnungsbegriff types), and
    `60EXTRC0` (prompt from catalogs, OCR-text-only request, lenient JSON parse,
    metadata prefill) wired into the worker with graceful degradation
-   (unconfigured → MANUAL_INDEXING, errored → REVIEW; document still READY).
+   (unconfigured → MANUAL_INDEXING, errored → REVIEW; document still READY). The
+   frontend green-screen re-skin (done) is a pure `css/app.css` rewrite — phosphor
+   green + amber on black, monospace, scanlines, mobile-first — with the views,
+   markup and REST calls untouched. RSS feeds are deferred.
 
 ## Source file naming convention
 

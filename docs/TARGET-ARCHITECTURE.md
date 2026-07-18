@@ -195,17 +195,25 @@ unwritable store ⇒ 503 and no metadata, exactly as today. (S3 dropped, D-2.)
   level, by the worker (the resilience4j circuit breaker of decision D-5 is not
   reproduced — a failed extraction simply degrades that run).
 
-## 7. Frontend: green-screen re-skin
+## 7. Frontend: green-screen re-skin — done
 
-Keep `index.html`, `js/` views, `api.js` contract untouched except styling hooks:
+`index.html`, the `js/` views and the `api.js` contract are **untouched**; the re-skin
+is a pure rewrite of `css/app.css` (rule 2 — same views, navigation and REST calls):
 
-- New `app.css` theme: black background, phosphor green (`#33ff33`) primary, amber
-  accent, monospace stack (`"IBM Plex Mono", "Courier New", monospace`), block-cursor
-  input styling, scanline/undecorated tables, high-contrast focus.
-- Stays **mobile-first**: existing off-canvas sidebar, responsive tables, touch targets.
-- Upload view: file picker restricted to PDF (`accept="application/pdf"`) — a
-  later-iteration tweak matching the PDF-only intake (D-8), listed here so it isn't lost.
+- Token-driven theme: black background (`#050a05`), phosphor green (`#33ff66`,
+  documented `#33ff33`) primary text with an amber (`#ffb000`) accent for active nav,
+  primary buttons and panel headers; a system **monospace** stack
+  (`ui-monospace … "IBM Plex Mono", "Courier New", monospace` — no external fonts, so it
+  stays offline), sharp 2px corners, phosphor `text-shadow`/`box-shadow` glow, uppercase
+  headers, green-bordered status badges (READY/DONE green, RECEIVED/CONVERTING/QUEUED/
+  RUNNING amber, FAILED red), and a CRT flourish — a fixed scanline + vignette overlay
+  (`body::before`, click-through) and a blinking block cursor after the view title.
+- Stays **mobile-first**: the existing off-canvas sidebar (≤720px), panel-scrolled wide
+  tables and `100dvh` layout carry over unchanged; `prefers-reduced-motion` disables the
+  blink.
 - Served by Apache as static files from the doc root (no Spring static handler).
+- Deferred: restricting the upload picker to `accept="application/pdf"` (a one-line
+  markup tweak matching PDF-only intake, D-8) — kept out of this CSS-only pass.
 
 ## 8. Configuration (environment)
 
@@ -309,8 +317,10 @@ poll 2000 ms, batch 2, max attempts 5, backoff base 5000 ms, lease 300 s),
    catalog-management REST boundaries (`/api/v1/intents`,
    `/api/v1/ordnungsbegriff-types`) — the catalog is seeded and drives extraction;
    runtime CRUD of intents/types is a follow-up.
-7. feeds, backup/bootstrap, green-screen re-skin, parity test pass; decommission
-   Java + Python + SQLite.
+7. **green-screen re-skin — done** (§7): `css/app.css` rewritten as the phosphor-green/
+   amber terminal theme, mobile-first, views/markup/REST untouched. **Feeds are deferred**
+   at the product owner's request.
+8. backup/bootstrap, parity test pass; decommission Java + Python + SQLite.
 
 Each iteration keeps the old and new stacks behind the same API where feasible;
 the parity checklist in `CLAUDE.md` gates every step.
