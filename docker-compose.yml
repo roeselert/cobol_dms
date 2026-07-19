@@ -23,7 +23,7 @@ services:
       - DMS_AI_URL=${DMS_AI_URL:-https://api.openai.com/v1}
       - DMS_AI_TOKEN=${DMS_AI_TOKEN:-}
       - DMS_AI_MODEL=${DMS_AI_MODEL:-gpt-5-mini}
-      # set to 1/true/yes/on to log each outgoing AI request (human-readable)
+      # set to 1/true/yes/on to log each AI request AND response (human-readable)
       - DMS_AI_LOG_REQUEST=${DMS_AI_LOG_REQUEST:-}
     volumes:
       # VSAM indexed files + object store under /data
