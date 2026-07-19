@@ -1,8 +1,8 @@
-# CI for the GNU COBOL migration stack: build the dms-cobol image,
-# START THE CONTAINER, smoke the iteration-2 API slice against it, and
-# validate the UAT compose file. On main the image is published to GHCR
-# so compose.uat.yml (pull_policy: always) picks it up on the next
-# `podman compose up` — a restart is a deploy, like the other services.
+# CI for the GNU COBOL DMS (the whole system now that Java + Python are
+# decommissioned): build the dms-cobol image, START THE CONTAINER, smoke
+# the full API against it, and validate the UAT compose file. On main the
+# image is published to GHCR so compose.uat.yml (pull_policy: always) picks
+# it up on the next `podman compose up` — a restart is a deploy.
 name: cobol
 
 on:
@@ -26,7 +26,7 @@ jobs:
 
       - name: Start container
         run: |
-          docker run -d --name dms-cobol -p 7861:7860 dms-cobol:ci
+          docker run -d --name dms-cobol -p 7860:7860 dms-cobol:ci
           # wait for the container's own healthcheck (curl /api/v1/health)
           for i in $(seq 1 60); do
             status=$(docker inspect -f '{{.State.Health.Status}}' dms-cobol)
@@ -35,8 +35,8 @@ jobs:
           done
           docker inspect -f '{{.State.Health.Status}}' dms-cobol | grep -q healthy
 
-      - name: Smoke test (organization slice)
-        run: ./scripts/cobol-smoke.sh http://localhost:7861
+      - name: Smoke test (full API)
+        run: ./scripts/cobol-smoke.sh http://localhost:7860
 
       - name: Container logs
         if: always()

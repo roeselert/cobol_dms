@@ -3,25 +3,28 @@
 ## What this project is
 
 This repository contains a **document management system (DMS)** taken over from another
-team. It is currently implemented as:
+team. It was originally a Spring Boot 3 / Java 21 backend with two Python FastAPI
+document services (conversion + AI extraction) over SQLite.
 
-- `dms/` — Spring Boot 3 / Java 21 backend (BCE architecture, SQLite, S3/filesystem
-  object store, in-process job worker) plus a vanilla-JS single-page frontend
-  (`dms/src/main/resources/static/`)
-- `services/conversion/` — Python FastAPI service: PDF/A normalization + OCR + text
-  extraction (ocrmypdf, ghostscript, libreoffice, pdftotext)
-- `services/extraction/` — Python FastAPI service: AI metadata extraction against an
-  OpenAI-compatible chat-completions API
+**Our organization has no Java know-how**, so the entire backend (Java **and** Python)
+was migrated to **GNU COBOL (GnuCOBOL)**, preserving the externally observable behavior:
+the same REST API (`/api/v1/...`), the same domain rules, the same ingest pipeline
+semantics. **That migration is complete** — the Java module (`dms/`) and the Python
+services (`services/`) have been **decommissioned and removed**; the COBOL stack is the
+whole system now. The repository is:
 
-**Our organization has no Java know-how.** The mission is to migrate the entire backend
-(Java **and** Python) to **GNU COBOL (GnuCOBOL)** while preserving the externally
-observable behavior: the same REST API (`/api/v1/...`), the same domain rules, the same
-ingest pipeline semantics.
+- `src/` — all GNU COBOL sources + copybooks (flat directory, see naming below)
+- `cobol/` — the Apache httpd + CGI runtime image (`Dockerfile`, `start.sh`, `dms.conf`)
+- `web/` — the vanilla-JS single-page frontend (kept per rule 2, re-skinned as a green
+  screen), served statically by Apache
+- `docs/` — the architecture documentation; `scripts/` — the E2E smoke test
 
-The reverse-engineered as-is architecture is documented in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the target COBOL architecture in
-[`docs/TARGET-ARCHITECTURE.md`](docs/TARGET-ARCHITECTURE.md). Keep both documents
-up to date as the migration proceeds.
+The reverse-engineered as-is architecture (the now-removed Java/Python stack) is kept
+for historical reference in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the delivered
+COBOL architecture in [`docs/TARGET-ARCHITECTURE.md`](docs/TARGET-ARCHITECTURE.md).
+
+Deliberately **not** implemented (the product owner declared the system feature-complete
+without them): the search BC, the RSS feeds BC, and the backup/operations hardening.
 
 ## Migration fundamentals (binding rules)
 
@@ -153,14 +156,16 @@ SONSTIGES), extraction intents with fields. Do not translate these in code or UI
 ## Build, run & test (COBOL stack)
 
 - Compile locally: `cobc -x -free -I src -o dmsapi src/00HTTPC0.cob …` — the
-  authoritative file lists live in `cobol/Dockerfile` (CGI binary + `dmsboot`).
+  authoritative file lists live in `cobol/Dockerfile` (the CGI binary `dmsapi`, the
+  worker daemon `dmsworker` — linked `-lcurl` — and `dmsboot`).
 - Container: `docker build -f cobol/Dockerfile -t dms-cobol .` (context = repo root),
-  `docker run -p 7861:7860 dms-cobol`; data volume `/data`, VSAM files in `/data/vsam`.
-- Smoke: `scripts/cobol-smoke.sh http://localhost:7861` (organization slice E2E).
+  `docker run -p 7860:7860 dms-cobol`; data volume `/data`, VSAM files in `/data/vsam`.
+- Smoke: `scripts/cobol-smoke.sh http://localhost:7860` (full E2E).
 - CI: `.github/workflows/cobol-ci.yml` builds the image, **starts the container**,
   waits for its healthcheck, smokes it, validates `compose.uat.yml`, and publishes
   `ghcr.io/<owner>/clouddms/dms-cobol:latest` on main.
-- UAT: `compose.uat.yml` runs `dms-cobol` on :7861 next to the Java stack on :7860.
+- Run: `docker compose up --build` (app on :7860); UAT: `compose.uat.yml` pulls the
+  published image and runs it on :7860 (the only stack now that Java is decommissioned).
 
 ## Working agreements
 

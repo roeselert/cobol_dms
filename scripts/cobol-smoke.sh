@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # End-to-end smoke against a running dms-cobol container (dev header
-# auth): health, identity, RBAC, org lifecycle, members (iteration 2)
-# plus the documents BC — upload/download/metadata/Akten/classes/config
-# (iteration 3). Companion to compose-smoke.sh (the as-is Java stack).
+# auth): health, identity, RBAC, org lifecycle, members; the documents
+# BC (upload/download/metadata/Akten/classes/config); the conversion
+# worker (upload -> READY, OCR text, /jobs); and AI graceful degradation.
 set -euo pipefail
 
-BASE="${1:-http://localhost:7861}"
+BASE="${1:-http://localhost:7860}"
 PDF="$(dirname "$0")/smoke.pdf"
 ADMIN="admin@example.com"
 H_ADMIN=(-H "X-Dev-User: $ADMIN")

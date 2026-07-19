@@ -1,8 +1,10 @@
 # Cloud DMS — As-Is Architecture (reverse-engineered)
 
-> Reverse-engineered from the code on 2026-07-17 (iteration 1 of the COBOL migration —
-> documentation only). This document describes the system **as it is today** (Java +
-> Python + JS). The migration target is described in
+> **Historical record.** The Java + Python + SQLite stack described below was
+> reverse-engineered on 2026-07-17 at the start of the COBOL migration and has since
+> been **fully migrated to GNU COBOL and removed from the repository** (the `dms/` and
+> `services/` trees no longer exist). This document is kept only as the record of what
+> was migrated *from*; the delivered system is described in
 > [`TARGET-ARCHITECTURE.md`](TARGET-ARCHITECTURE.md).
 
 ## 1. Introduction and goals

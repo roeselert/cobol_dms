@@ -236,7 +236,8 @@ poll 2000 ms, batch 2, max attempts 5, backoff base 5000 ms, lease 300 s),
    full organization BC (`20ORGS*`, `20USRS*`, `20MEMB*`) on GnuCOBOL indexed files
    behind Apache `mod_cgid`; containerized (`cobol/Dockerfile`), smoked in CI
    (`.github/workflows/cobol-ci.yml` — builds the image, starts the container, runs
-   `scripts/cobol-smoke.sh`) and wired into `compose.uat.yml` as `dms-cobol` on :7861.
+   `scripts/cobol-smoke.sh`) and wired into `compose.uat.yml` (originally on :7861
+   alongside the Java stack; now the sole service on :7860 after decommission).
    Remaining platform pieces (`00MPARC0` multipart, `00STORC0` object store) land
    with the documents BC. Implementation note: under `mod_cgid` the CGI's stdin is a
    unix socket, so the request body is read via `CALL "read"` on fd 0 — not by
@@ -318,12 +319,16 @@ poll 2000 ms, batch 2, max attempts 5, backoff base 5000 ms, lease 300 s),
    `/api/v1/ordnungsbegriff-types`) — the catalog is seeded and drives extraction;
    runtime CRUD of intents/types is a follow-up.
 7. **green-screen re-skin — done** (§7): `css/app.css` rewritten as the phosphor-green/
-   amber terminal theme, mobile-first, views/markup/REST untouched. **Feeds are deferred**
-   at the product owner's request.
-8. backup/bootstrap, parity test pass; decommission Java + Python + SQLite.
+   amber terminal theme, mobile-first, views/markup/REST untouched.
+8. **decommission — done**: the product owner declared the system **feature-complete**;
+   the search BC, the RSS feeds BC and the backup/operations hardening will **not** be
+   built. The legacy Java module (`dms/`) and the Python services (`services/`) have been
+   **deleted** from the repository, the JS frontend relocated to `web/`, and the compose
+   files + CI collapsed to the single GNU COBOL service on :7860. `docs/ARCHITECTURE.md`
+   is retained as a historical record of the removed stack.
 
-Each iteration keeps the old and new stacks behind the same API where feasible;
-the parity checklist in `CLAUDE.md` gates every step.
+Earlier iterations kept the old and new stacks behind the same API for comparison; with
+the migration complete the COBOL stack now stands alone.
 
 ## 10. Open decisions
 

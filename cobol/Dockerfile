@@ -68,9 +68,9 @@ RUN mkdir -p /app/cgi-bin /app/bin \
         /build/src/60INTNE0.cob /build/src/60INFDE0.cob \
         /build/src/60ORDTE0.cob
 
-# the JS frontend is kept as-is (green-screen re-skin is a later
-# iteration) and served statically by Apache
-COPY dms/src/main/resources/static/ /app/static/
+# the JS frontend (kept per rule 2, re-skinned as a green screen) lives
+# at the repo root now that the Java module is decommissioned
+COPY web/ /app/static/
 
 COPY cobol/dms.conf /etc/apache2/sites-available/000-default.conf
 COPY cobol/start.sh /app/start.sh
