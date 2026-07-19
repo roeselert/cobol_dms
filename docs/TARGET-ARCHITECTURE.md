@@ -227,6 +227,11 @@ is a pure rewrite of `css/app.css` (rule 2 — same views, navigation and REST c
 poll 2000 ms, batch 2, max attempts 5, backoff base 5000 ms, lease 300 s),
 `DMS_OCR_LANG` (Tesseract language data, default `deu+eng`), `DMS_AI_URL`,
 `DMS_AI_TOKEN`, `DMS_AI_MODEL` (no `DMS_AI_DOCUMENT_MODE` — text-only, D-9),
+`DMS_AI_LOG_REQUEST` (off by default; set to `1`/`true`/`yes`/`on` to make
+`60EXTRC0` log every outgoing chat-completions request in human-readable form —
+endpoint, model, headers with the bearer token redacted, and the system + user
+messages including the full OCR text — to the worker's stdout, for diagnosing
+extractions that return nothing),
 `DMS_FEED_TOKEN_SECRET`, `DMS_FEED_TOKEN_TTL_DAYS`, `DMS_BACKUP_*`. Health endpoint
 `GET /api/v1/health`
 (worker heartbeat file + store writability + files openable) replaces the actuator

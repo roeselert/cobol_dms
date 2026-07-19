@@ -30,6 +30,10 @@ WORKING-STORAGE SECTION.
 01 WS-AI-URL            PIC X(512).
 01 WS-AI-TOKEN          PIC X(200).
 01 WS-AI-MODEL          PIC X(100).
+*> request logging (DMS_AI_LOG_REQUEST) — off unless explicitly enabled
+01 WS-LOG-REQ           PIC X VALUE "N".
+01 WS-AI-LOG            PIC X(20).
+01 WS-TOKLEN            PIC 9(4).
 *> OCR text
 01 WS-S-OP              PIC X(4).
 01 WS-S-RET             PIC X(2).
@@ -165,6 +169,9 @@ MAIN.
         "/chat/completions model " FUNCTION TRIM (WS-AI-MODEL)
         " for " FUNCTION TRIM (L-DOC-ID)
         " (" WS-TEXTLEN " text bytes, " WS-BODYLEN " body bytes)"
+    IF WS-LOG-REQ = "Y"
+        PERFORM LOG-REQUEST
+    END-IF
     CALL "60CURLC0" USING WS-AI-URL WS-AI-TOKEN WS-BODY WS-BODYLEN
         WS-RESP WS-RESPLEN WS-STATUS WS-CRET
     IF WS-CRET NOT = "00"
@@ -219,7 +226,21 @@ CHECK-CONFIG.
     END-ACCEPT
     IF FUNCTION TRIM (WS-AI-MODEL) = SPACES
         MOVE "gpt-5-mini" TO WS-AI-MODEL
-    END-IF.
+    END-IF
+    *> request logging toggle: enabled for 1/true/yes/on (any case)
+    MOVE "N" TO WS-LOG-REQ
+    MOVE SPACES TO WS-AI-LOG
+    ACCEPT WS-AI-LOG FROM ENVIRONMENT "DMS_AI_LOG_REQUEST"
+        ON EXCEPTION MOVE SPACES TO WS-AI-LOG
+    END-ACCEPT
+    MOVE FUNCTION LOWER-CASE (FUNCTION TRIM (WS-AI-LOG)) TO WS-AI-LOG
+    EVALUATE WS-AI-LOG
+        WHEN "1"
+        WHEN "true"
+        WHEN "yes"
+        WHEN "on"
+            MOVE "Y" TO WS-LOG-REQ
+    END-EVALUATE.
 
 READ-TEXT.
     MOVE 0 TO WS-TEXTLEN
@@ -418,6 +439,37 @@ APPEND-ESCAPED.
                 ADD 1 TO WS-BP
         END-EVALUATE
     END-PERFORM.
+
+*> --- request logging (DMS_AI_LOG_REQUEST) -------------------------
+*> Emit the outgoing chat-completions request in human-readable form:
+*> the resolved endpoint/model/headers (bearer token redacted) plus the
+*> system and user messages with their real line breaks — i.e. the same
+*> content as WS-BODY, but un-escaped and un-minified so it can be read.
+LOG-REQUEST.
+    DISPLAY "60EXTRC0: ===== AI request (human-readable) for "
+        FUNCTION TRIM (L-DOC-ID) " ====="
+    DISPLAY "60EXTRC0:   POST " FUNCTION TRIM (WS-AI-URL)
+        "/chat/completions"
+    DISPLAY "60EXTRC0:   model: " FUNCTION TRIM (WS-AI-MODEL)
+    DISPLAY "60EXTRC0:   response_format: json_object"
+    DISPLAY "60EXTRC0:   header Content-Type: application/json"
+    COMPUTE WS-TOKLEN =
+        FUNCTION LENGTH (FUNCTION TRIM (WS-AI-TOKEN))
+    DISPLAY "60EXTRC0:   header Authorization: Bearer <redacted, "
+        WS-TOKLEN " chars>"
+    DISPLAY "60EXTRC0:   body bytes: " WS-BODYLEN
+        " (OCR text " WS-TEXTLEN " bytes)"
+    DISPLAY "60EXTRC0:   --- message[0] role=system ---"
+    DISPLAY WS-SYS (1 : WS-SP)
+    DISPLAY "60EXTRC0:   --- message[1] role=user ---"
+    DISPLAY 'Analyze the attached document "'
+        FUNCTION TRIM (L-FILENAME)
+        '" and return the metadata JSON.'
+    DISPLAY " "
+    DISPLAY "Document content:"
+    DISPLAY WS-TEXT (1 : WS-TEXTLEN)
+    DISPLAY "60EXTRC0: ===== end AI request for "
+        FUNCTION TRIM (L-DOC-ID) " =====".
 
 *> --- response: pull choices[0].message.content --------------------
 EXTRACT-CONTENT.
