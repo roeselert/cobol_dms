@@ -174,6 +174,9 @@ MAIN.
     END-IF
     CALL "60CURLC0" USING WS-AI-URL WS-AI-TOKEN WS-BODY WS-BODYLEN
         WS-RESP WS-RESPLEN WS-STATUS WS-CRET
+    IF WS-LOG-REQ = "Y"
+        PERFORM LOG-RESPONSE
+    END-IF
     IF WS-CRET NOT = "00"
         DISPLAY "60EXTRC0: " FUNCTION TRIM (L-DOC-ID)
             " AI call FAILED (curl ret=" WS-CRET
@@ -469,6 +472,25 @@ LOG-REQUEST.
     DISPLAY "Document content:"
     DISPLAY WS-TEXT (1 : WS-TEXTLEN)
     DISPLAY "60EXTRC0: ===== end AI request for "
+        FUNCTION TRIM (L-DOC-ID) " =====".
+
+*> Emit the AI response as received: the curl/HTTP outcome plus the raw
+*> response body (the provider's JSON, which on an error carries the
+*> reason the extraction returned nothing). Runs on success and failure
+*> alike, before any parsing, so error bodies are visible too.
+LOG-RESPONSE.
+    DISPLAY "60EXTRC0: ===== AI response for "
+        FUNCTION TRIM (L-DOC-ID) " ====="
+    DISPLAY "60EXTRC0:   curl ret: " WS-CRET
+        "  http status: " WS-STATUS
+        "  body bytes: " WS-RESPLEN
+    DISPLAY "60EXTRC0:   --- response body ---"
+    IF WS-RESPLEN > 0
+        DISPLAY WS-RESP (1 : WS-RESPLEN)
+    ELSE
+        DISPLAY "60EXTRC0:   <empty>"
+    END-IF
+    DISPLAY "60EXTRC0: ===== end AI response for "
         FUNCTION TRIM (L-DOC-ID) " =====".
 
 *> --- response: pull choices[0].message.content --------------------
