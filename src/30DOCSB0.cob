@@ -212,6 +212,15 @@ DO-UPLOAD.
     PERFORM EMIT-DOC-DTO.
 
 FIND-ORGUNIT-FIELD.
+    *> the frontend passes orgUnitId as a query parameter
+    *> (POST /documents?orgUnitId=...); a multipart form field of the
+    *> same name is also accepted as a fallback.
+    MOVE "orgUnitId" TO WS-QP-WANT
+    PERFORM FIND-QP
+    IF WS-QP-VAL NOT = SPACES
+        MOVE WS-QP-VAL TO WS-ORGUNIT
+        EXIT PARAGRAPH
+    END-IF
     PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > HX-FF-COUNT
         IF HX-FF-NAME (WS-I) = "orgUnitId"
             MOVE HX-FF-VALUE (WS-I) TO WS-ORGUNIT
