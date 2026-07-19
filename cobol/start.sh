@@ -20,6 +20,7 @@ su -s /bin/sh www-data -c "COB_FILE_PATH='$COB_FILE_PATH' \
     DMS_DATA_DIR='$DATA_DIR' DMS_OCR_LANG='${DMS_OCR_LANG:-eng}' \
     DMS_AI_URL='${DMS_AI_URL:-}' DMS_AI_TOKEN='${DMS_AI_TOKEN:-}' \
     DMS_AI_MODEL='${DMS_AI_MODEL:-}' \
+    DMS_AI_LOG_REQUEST='${DMS_AI_LOG_REQUEST:-}' \
     /app/bin/dmsworker" &
 
 . /etc/apache2/envvars
