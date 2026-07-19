@@ -1,11 +1,15 @@
 # UAT stack for the VPS, run with Podman: instead of building locally (see
-# docker-compose.yml) this pulls the three images CI publishes to the GitHub
-# Container Registry — :latest always tracks main, and pull_policy: always
-# re-pulls on every up, so a restart is a deploy.
+# docker-compose.yml) this pulls the dms-cobol image CI publishes to the
+# GitHub Container Registry — :latest always tracks main, and
+# pull_policy: always re-pulls on every up, so a restart is a deploy.
 #
-#   podman login ghcr.io                            # once, if the packages are private
-#   podman compose -f compose.uat.yml up -d         # app on http://<vps>:7860
-#   podman compose -f compose.uat.yml down          # dms-data volume survives
+#   podman login ghcr.io                          # once, if the package is private
+#   podman compose -f compose.uat.yml up -d       # app on http://<vps>:7860
+#   podman compose -f compose.uat.yml down        # dms-cobol-data volume survives
+#
+# The Java app and the Python conversion/extraction services have been
+# decommissioned; the GNU COBOL DMS is the whole system (conversion in the
+# in-process worker daemon, AI extraction via libcurl).
 #
 # UAT runs with dev header auth (DMS_SECURITY_MODE=dev): identity travels as
 # the X-Dev-User header without any credential check — do not expose this
@@ -13,40 +17,10 @@
 # unless DMS_AI_TOKEN is set.
 
 services:
-  conversion:
-    image: ghcr.io/roeselert/clouddms/dms-conversion:latest
-    pull_policy: always
-    restart: unless-stopped
-    environment:
-      - DMS_SERVICE_TOKEN=${DMS_SERVICES_TOKEN:-dev-token}
-    healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:7860/healthz')"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
-  extraction:
-    image: ghcr.io/roeselert/clouddms/dms-extraction:latest
-    pull_policy: always
-    restart: unless-stopped
-    environment:
-      - DMS_SERVICE_TOKEN=${DMS_SERVICES_TOKEN:-dev-token}
-      # blank token -> the service answers status=unconfigured and the stack
-      # still works; documents are flagged for manual indexing
-      - DMS_AI_URL=${DMS_AI_URL:-https://api.openai.com/v1}
-      - DMS_AI_TOKEN=${DMS_AI_TOKEN:-}
-      - DMS_AI_MODEL=${DMS_AI_MODEL:-gpt-5-mini}
-      - DMS_AI_DOCUMENT_MODE=${DMS_AI_DOCUMENT_MODE:-text}
-    healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:7860/healthz')"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
+  # GNU COBOL DMS behind Apache/CGI. Image published by
+  # .github/workflows/cobol-ci.yml on main.
   dms:
-    image: ghcr.io/roeselert/clouddms/dms:latest
+    image: ghcr.io/roeselert/clouddms/dms-cobol:latest
     pull_policy: always
     restart: unless-stopped
     ports:
@@ -55,18 +29,19 @@ services:
       # dev by default (see header warning); export DMS_SECURITY_MODE=oidc plus
       # the issuer URI to run UAT against a real IdP
       - DMS_SECURITY_MODE=${DMS_SECURITY_MODE:-dev}
-      - DMS_CONVERSION_URL=http://conversion:7860
-      - DMS_EXTRACTION_URL=http://extraction:7860
-      - DMS_SERVICES_TOKEN=${DMS_SERVICES_TOKEN:-dev-token}
+      - DMS_BOOTSTRAP_ADMINS=${DMS_BOOTSTRAP_ADMINS:-admin@example.com}
+      # blank token -> AI extraction stays gracefully unconfigured
+      - DMS_AI_URL=${DMS_AI_URL:-https://api.openai.com/v1}
+      - DMS_AI_TOKEN=${DMS_AI_TOKEN:-}
+      - DMS_AI_MODEL=${DMS_AI_MODEL:-gpt-5-mini}
     volumes:
-      # SQLite DB + object store; the image's /data is owned by uid 1000, and
-      # the volume inherits that ownership on first use
-      - dms-data:/data
-    depends_on:
-      conversion:
-        condition: service_healthy
-      extraction:
-        condition: service_healthy
+      # VSAM indexed files + object store under /data
+      - dms-cobol-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7860/api/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
 volumes:
-  dms-data:
+  dms-cobol-data:

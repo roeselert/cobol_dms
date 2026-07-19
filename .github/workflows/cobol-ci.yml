@@ -1,0 +1,54 @@
+# CI for the GNU COBOL DMS (the whole system now that Java + Python are
+# decommissioned): build the dms-cobol image, START THE CONTAINER, smoke
+# the full API against it, and validate the UAT compose file. On main the
+# image is published to GHCR so compose.uat.yml (pull_policy: always) picks
+# it up on the next `podman compose up` — a restart is a deploy.
+name: cobol
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  pull_request:
+
+jobs:
+  build-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dms-cobol image
+        run: docker build -f cobol/Dockerfile -t dms-cobol:ci .
+
+      - name: Start container
+        run: |
+          docker run -d --name dms-cobol -p 7860:7860 dms-cobol:ci
+          # wait for the container's own healthcheck (curl /api/v1/health)
+          for i in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' dms-cobol)
+            [ "$status" = "healthy" ] && break
+            sleep 2
+          done
+          docker inspect -f '{{.State.Health.Status}}' dms-cobol | grep -q healthy
+
+      - name: Smoke test (full API)
+        run: ./scripts/cobol-smoke.sh http://localhost:7860
+
+      - name: Container logs
+        if: always()
+        run: docker logs dms-cobol
+
+      - name: Validate UAT compose file
+        run: docker compose -f compose.uat.yml config -q
+
+      - name: Publish to GHCR (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag dms-cobol:ci ghcr.io/${{ github.repository_owner }}/clouddms/dms-cobol:latest
+          docker push ghcr.io/${{ github.repository_owner }}/clouddms/dms-cobol:latest

@@ -1,0 +1,198 @@
+>>SOURCE FORMAT FREE
+*> 30CLASB0 — documents: REST boundary for /api/v1/document-classes,
+*> mirroring DocumentClassesController.
+*>   GET    /v1/document-classes        any authenticated user (sorted)
+*>   POST   /v1/document-classes        bootstrap admin only -> 201
+*>   PUT    /v1/document-classes/{id}   bootstrap admin only
+*>   DELETE /v1/document-classes/{id}   bootstrap admin only -> 204
+*> Mutations are reserved for bootstrap admins (403, audited) because
+*> the catalog is deployment-global and universally readable.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "30CLASB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+*> vocabulary control interface (30VOCAC0)
+01 WS-V-OP              PIC X(4).
+01 WS-V-STATUS          PIC X(3).
+01 WS-V-MSG             PIC X(200).
+01 WS-V-NAME            PIC X(200).
+01 WS-V-DESC            PIC X(200).
+COPY "30CLASR0.cpy" REPLACING ==:PFX:== BY ==WS-CL==.
+01 WS-CL-TABLE.
+   05 WS-CL-COUNT       PIC 9(4).
+   05 WS-CL-ROW OCCURS 100.
+      10 WS-CL-ROW-ID   PIC X(36).
+      10 WS-CL-ROW-NAME PIC X(50).
+      10 WS-CL-ROW-DESC PIC X(200).
+*> audit interface (10AUDTE0) — bootstrap-admin decisions are audited
+01 WS-AU-USER           PIC X(36).
+01 WS-AU-ACTION         PIC X(10).
+01 WS-AU-RTYPE          PIC X(20).
+01 WS-AU-RID            PIC X(36).
+01 WS-AU-EFFECT         PIC X(5).
+*> JSON helpers
+01 WS-KEY               PIC X(64).
+01 WS-VAL               PIC X(512).
+01 WS-FOUND             PIC X.
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-I                 PIC 9(4) COMP.
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    EVALUATE TRUE
+        WHEN HX-METHOD = "GET" AND HX-SEG (3) = SPACES
+            PERFORM DO-LIST
+        WHEN HX-METHOD = "POST" AND HX-SEG (3) = SPACES
+            PERFORM DO-CREATE
+        WHEN HX-METHOD = "PUT" AND HX-SEG (3) NOT = SPACES
+            PERFORM DO-UPDATE
+        WHEN HX-METHOD = "DELETE" AND HX-SEG (3) NOT = SPACES
+            PERFORM DO-DELETE
+        WHEN OTHER
+            MOVE 405 TO HX-STATUS
+            MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+    END-EVALUATE
+    GOBACK.
+
+DO-LIST.
+    MOVE "LIST" TO WS-V-OP
+    CALL "30VOCAC0" USING WS-V-OP WS-V-STATUS WS-V-MSG WS-V-NAME
+        WS-V-DESC WS-CL-REC WS-CL-TABLE
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    STRING "[" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-CL-COUNT
+        IF WS-I > 1
+            STRING "," DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        END-IF
+        MOVE WS-CL-ROW-DESC (WS-I) (1 : 200) TO WS-ESC-IN
+        CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+        STRING '{"id":"' FUNCTION TRIM (WS-CL-ROW-ID (WS-I))
+               '","name":"' FUNCTION TRIM (WS-CL-ROW-NAME (WS-I))
+               '","description":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-PERFORM
+    STRING "]" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS.
+
+DO-CREATE.
+    MOVE "WRITE" TO WS-AU-ACTION
+    PERFORM REQUIRE-BOOTSTRAP-ADMIN
+    IF HX-STATUS = 403
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM PARSE-BODY
+    MOVE "CREA" TO WS-V-OP
+    CALL "30VOCAC0" USING WS-V-OP WS-V-STATUS WS-V-MSG WS-V-NAME
+        WS-V-DESC WS-CL-REC WS-CL-TABLE
+    IF WS-V-STATUS = "201"
+        MOVE 201 TO HX-STATUS
+        PERFORM EMIT-DTO
+    ELSE
+        PERFORM EMIT-VOCAB-ERROR
+    END-IF.
+
+DO-UPDATE.
+    MOVE "WRITE" TO WS-AU-ACTION
+    PERFORM REQUIRE-BOOTSTRAP-ADMIN
+    IF HX-STATUS = 403
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM PARSE-BODY
+    MOVE SPACES TO WS-CL-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-CL-ID
+    MOVE "UPDT" TO WS-V-OP
+    CALL "30VOCAC0" USING WS-V-OP WS-V-STATUS WS-V-MSG WS-V-NAME
+        WS-V-DESC WS-CL-REC WS-CL-TABLE
+    IF WS-V-STATUS = "200"
+        MOVE 200 TO HX-STATUS
+        PERFORM EMIT-DTO
+    ELSE
+        PERFORM EMIT-VOCAB-ERROR
+    END-IF.
+
+DO-DELETE.
+    MOVE "DELETE" TO WS-AU-ACTION
+    PERFORM REQUIRE-BOOTSTRAP-ADMIN
+    IF HX-STATUS = 403
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-CL-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-CL-ID
+    MOVE "DELE" TO WS-V-OP
+    CALL "30VOCAC0" USING WS-V-OP WS-V-STATUS WS-V-MSG WS-V-NAME
+        WS-V-DESC WS-CL-REC WS-CL-TABLE
+    IF WS-V-STATUS = "200"
+        MOVE 204 TO HX-STATUS
+        MOVE SPACES TO HX-RESPONSE
+    ELSE
+        PERFORM EMIT-VOCAB-ERROR
+    END-IF.
+
+REQUIRE-BOOTSTRAP-ADMIN.
+    MOVE HX-USER-ID TO WS-AU-USER
+    MOVE "DOCUMENT_CLASS" TO WS-AU-RTYPE
+    MOVE SPACES TO WS-AU-RID
+    IF HX-USER-ADMIN NOT = "Y"
+        MOVE "DENY" TO WS-AU-EFFECT
+        CALL "10AUDTE0" USING WS-AU-USER WS-AU-ACTION WS-AU-RTYPE
+            WS-AU-RID WS-AU-EFFECT
+        MOVE 403 TO HX-STATUS
+        MOVE '{"error":"only bootstrap admins may manage DOCUMENT_C' &
+             'LASS"}' TO HX-RESPONSE
+    ELSE
+        MOVE "ALLOW" TO WS-AU-EFFECT
+        CALL "10AUDTE0" USING WS-AU-USER WS-AU-ACTION WS-AU-RTYPE
+            WS-AU-RID WS-AU-EFFECT
+    END-IF.
+
+PARSE-BODY.
+    MOVE "name" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-VAL WS-FOUND
+    MOVE SPACES TO WS-V-NAME
+    IF WS-FOUND = "Y"
+        MOVE WS-VAL (1 : 200) TO WS-V-NAME
+    END-IF
+    MOVE "description" TO WS-KEY
+    CALL "00JSONC0" USING HX-BODY WS-KEY WS-VAL WS-FOUND
+    MOVE SPACES TO WS-V-DESC
+    IF WS-FOUND = "Y"
+        MOVE WS-VAL (1 : 200) TO WS-V-DESC
+    END-IF.
+
+EMIT-DTO.
+    MOVE WS-CL-DESC (1 : 200) TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    MOVE SPACES TO HX-RESPONSE
+    STRING '{"id":"' FUNCTION TRIM (WS-CL-ID)
+           '","name":"' FUNCTION TRIM (WS-CL-NAME)
+           '","description":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE
+    END-STRING.
+
+EMIT-VOCAB-ERROR.
+    MOVE WS-V-STATUS TO HX-STATUS
+    MOVE WS-V-MSG (1 : 200) TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    MOVE SPACES TO HX-RESPONSE
+    IF WS-V-MSG = SPACES
+        STRING '{"error":"not found"}' DELIMITED BY SIZE
+            INTO HX-RESPONSE
+        END-STRING
+    ELSE
+        STRING '{"error":"' WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+            DELIMITED BY SIZE INTO HX-RESPONSE
+        END-STRING
+    END-IF.
+END PROGRAM "30CLASB0".

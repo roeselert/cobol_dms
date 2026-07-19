@@ -1,0 +1,107 @@
+>>SOURCE FORMAT FREE
+*> 30DOCSE0 — documents: file access for the DOCUMENT indexed file.
+*> Ops: GET by id · WRT write · ALLD newest-first table scan (READ
+*> PREVIOUS on the ingest-date alternate key; capped at 300 rows —
+*> documented iteration limit, ACL filtering happens in the boundary).
+*> L-RET: 00 ok · 23 not found · 22 duplicate · 9x file error.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "30DOCSE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT DOC-FILE ASSIGN TO "DOCUMENT"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS DC-ID
+        ALTERNATE RECORD KEY IS DC-INGEST WITH DUPLICATES
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD DOC-FILE.
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==DC==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==L-DC==.
+01 L-DC-TABLE.
+   05 L-DC-COUNT        PIC 9(4).
+   05 L-DC-ROW OCCURS 300.
+      10 L-DC-ROW-ID       PIC X(36).
+      10 L-DC-ROW-NAME     PIC X(255).
+      10 L-DC-ROW-UPLOADER PIC X(36).
+      10 L-DC-ROW-ORG      PIC X(36).
+      10 L-DC-ROW-INGEST   PIC 9(13).
+PROCEDURE DIVISION USING L-OP L-RET L-DC-REC L-DC-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "ALLD" PERFORM DO-ALL-DESC
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE DOC-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O DOC-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT DOC-FILE
+        CLOSE DOC-FILE
+        OPEN I-O DOC-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-DC-ID TO DC-ID
+    READ DOC-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE DC-REC TO L-DC-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-WRITE.
+    MOVE L-DC-REC TO DC-REC
+    WRITE DC-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-ALL-DESC.
+    MOVE 0 TO L-DC-COUNT
+    MOVE 9999999999999 TO DC-INGEST
+    START DOC-FILE KEY IS <= DC-INGEST
+    IF WS-FS = "00"
+        *> after START the next READ NEXT returns the positioned
+        *> record; take it, then walk backwards
+        READ DOC-FILE NEXT
+        PERFORM UNTIL L-DC-COUNT >= 300
+                OR (WS-FS NOT = "00" AND WS-FS NOT = "02")
+            PERFORM ADD-ROW
+            READ DOC-FILE PREVIOUS
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+
+ADD-ROW.
+    ADD 1 TO L-DC-COUNT
+    MOVE DC-ID       TO L-DC-ROW-ID (L-DC-COUNT)
+    MOVE DC-NAME     TO L-DC-ROW-NAME (L-DC-COUNT)
+    MOVE DC-UPLOADER TO L-DC-ROW-UPLOADER (L-DC-COUNT)
+    MOVE DC-ORG      TO L-DC-ROW-ORG (L-DC-COUNT)
+    MOVE DC-INGEST   TO L-DC-ROW-INGEST (L-DC-COUNT).
+END PROGRAM "30DOCSE0".

@@ -3,25 +3,28 @@
 ## What this project is
 
 This repository contains a **document management system (DMS)** taken over from another
-team. It is currently implemented as:
+team. It was originally a Spring Boot 3 / Java 21 backend with two Python FastAPI
+document services (conversion + AI extraction) over SQLite.
 
-- `dms/` — Spring Boot 3 / Java 21 backend (BCE architecture, SQLite, S3/filesystem
-  object store, in-process job worker) plus a vanilla-JS single-page frontend
-  (`dms/src/main/resources/static/`)
-- `services/conversion/` — Python FastAPI service: PDF/A normalization + OCR + text
-  extraction (ocrmypdf, ghostscript, libreoffice, pdftotext)
-- `services/extraction/` — Python FastAPI service: AI metadata extraction against an
-  OpenAI-compatible chat-completions API
+**Our organization has no Java know-how**, so the entire backend (Java **and** Python)
+was migrated to **GNU COBOL (GnuCOBOL)**, preserving the externally observable behavior:
+the same REST API (`/api/v1/...`), the same domain rules, the same ingest pipeline
+semantics. **That migration is complete** — the Java module (`dms/`) and the Python
+services (`services/`) have been **decommissioned and removed**; the COBOL stack is the
+whole system now. The repository is:
 
-**Our organization has no Java know-how.** The mission is to migrate the entire backend
-(Java **and** Python) to **GNU COBOL (GnuCOBOL)** while preserving the externally
-observable behavior: the same REST API (`/api/v1/...`), the same domain rules, the same
-ingest pipeline semantics.
+- `src/` — all GNU COBOL sources + copybooks (flat directory, see naming below)
+- `cobol/` — the Apache httpd + CGI runtime image (`Dockerfile`, `start.sh`, `dms.conf`)
+- `web/` — the vanilla-JS single-page frontend (kept per rule 2, re-skinned as a green
+  screen), served statically by Apache
+- `docs/` — the architecture documentation; `scripts/` — the E2E smoke test
 
-The reverse-engineered as-is architecture is documented in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the target COBOL architecture in
-[`docs/TARGET-ARCHITECTURE.md`](docs/TARGET-ARCHITECTURE.md). Keep both documents
-up to date as the migration proceeds.
+The reverse-engineered as-is architecture (the now-removed Java/Python stack) is kept
+for historical reference in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); the delivered
+COBOL architecture in [`docs/TARGET-ARCHITECTURE.md`](docs/TARGET-ARCHITECTURE.md).
+
+Deliberately **not** implemented (the product owner declared the system feature-complete
+without them): the search BC, the RSS feeds BC, and the backup/operations hardening.
 
 ## Migration fundamentals (binding rules)
 
@@ -36,9 +39,10 @@ up to date as the migration proceeds.
    error mapping) is strictly **separate from business logic**. Business boundary
    programs never touch CGI variables directly.
 4. **Migrate the Python services to GNU COBOL too**, and integrate them **in-process
-   (direct CALL), not as HTTP services**. The conversion toolchain keeps invoking the
-   same external CLI tools (ocrmypdf, gs, libreoffice, pdftotext); the extraction logic
-   (prompt assembly, response parsing) becomes COBOL.
+   (direct CALL), not as HTTP services**. The conversion step is **OCR-only** (rule 8):
+   it invokes ocrmypdf's OCR to produce the plain text for indexing/AI — no ghostscript,
+   no LibreOffice. The extraction logic (prompt assembly, response parsing) becomes
+   COBOL and receives **only the OCR text** (rule 8).
 5. **VSAM-style storage, no SQLite.** All tables move to GnuCOBOL
    `ORGANIZATION IS INDEXED` files (VSAM KSDS equivalent) with primary and alternate
    record keys. No SQL anywhere. SQLite FTS5 has no VSAM equivalent — full-text search
@@ -49,8 +53,33 @@ up to date as the migration proceeds.
 7. **One flat source directory** (`src/`) for all COBOL sources and copybooks.
    **File names are max 12 characters** including extension. The naming syntax below
    encodes business-component ordering.
-8. **Iteration 1 is documentation only** — no code changes. Migration code starts in
-   later iterations.
+8. **PDF is the only accepted input format, OCR-only conversion.** Uploads other than
+   `application/pdf` are rejected with 415 (deliberate simplification vs. the as-is
+   system, which also takes docx/images/eml). Because the input is always PDF the
+   conversion step does **no PDF/A normalization** — its only job is **OCR** to extract
+   the plain text. No ghostscript, no LibreOffice, no image path. Renditions are
+   therefore just `ORIGINAL` (the uploaded PDF, always what downloads serve) and `TEXT`
+   (the OCR text); there is no `PDF_A` rendition. **AI extraction consumes only the OCR
+   text** (no PDF/file or image transport mode).
+9. **Iterations** (status in `docs/TARGET-ARCHITECTURE.md` §9): iteration 1 was
+   documentation only; iteration 2 (done) delivered the platform layer + the
+   organization BC slice behind Apache CGI, containerized and CI-smoked; iteration 3
+   (done) added the documents BC — object store, multipart upload (PDF-only), document
+   list/get/download/reprocess, metadata + Aktenbildung, Akten, document classes,
+   `/config` — on ten new indexed files, extended-smoked in CI; iteration 4 (done)
+   added the conversion BC — the in-process ingest worker daemon (`50JOBSW0`, job
+   claim/lease/retry/backoff) driving OCR-only conversion (`50CONVC0`: ocrmypdf +
+   pdftotext, no PDF/A) to the `TEXT` rendition, RECEIVED → CONVERTING → READY, plus
+   the `/jobs` queue view — extended-smoked (upload → READY, OCR text, `/jobs` DONE);
+   iteration 5 (search) is deferred at the product owner's request; iteration 6 (done)
+   added the aiextraction BC — the LLM called in-process via **libcurl** (`60CURLC0`,
+   `curl_easy_*`), three seeded catalogs (intents/fields/Ordnungsbegriff types), and
+   `60EXTRC0` (prompt from catalogs, OCR-text-only request, lenient JSON parse,
+   metadata prefill) wired into the worker with graceful degradation
+   (unconfigured → MANUAL_INDEXING, errored → REVIEW; document still READY). The
+   frontend green-screen re-skin (done) is a pure `css/app.css` rewrite — phosphor
+   green + amber on black, monospace, scanlines, mobile-first — with the views,
+   markup and REST calls untouched. RSS feeds are deferred.
 
 ## Source file naming convention
 
@@ -91,10 +120,13 @@ Examples: `00HTTPC0.cob` (CGI/HTTP layer), `00JSONC0.cob` (JSON parse/emit),
 - **CGI dispatcher** (`00HTTPC0`): routes `/api/v1/...` to boundary programs.
 - **Worker daemon** (`50JOBSW0`): long-running GnuCOBOL process polling the VSAM job
   queue file — replaces the Spring scheduler; same claim/lease/retry/backoff semantics.
-- **Data**: VSAM indexed files under a data directory; original/PDF-A/text binaries in
-  the filesystem object store (S3 support dropped or deferred — open decision).
+  Conversion is **OCR-only** in-process: ocrmypdf's OCR yields the text (no ghostscript,
+  no libreoffice — PDF-only intake, rule 8).
+- **Data**: VSAM indexed files under a data directory; original/text binaries in
+  the filesystem object store (S3 support dropped — `00STORC0`).
 - **LLM**: libcurl from COBOL, provider config via environment
-  (`DMS_AI_URL`/`DMS_AI_TOKEN`/`DMS_AI_MODEL`), JSON-object response contract unchanged.
+  (`DMS_AI_URL`/`DMS_AI_TOKEN`/`DMS_AI_MODEL`), JSON-object response contract unchanged;
+  the document is sent as **OCR text only** (no PDF/file or image mode — rule 8).
 
 ## Domain language (keep the German terms)
 
@@ -106,9 +138,10 @@ SONSTIGES), extraction intents with fields. Do not translate these in code or UI
 ## Invariants to preserve (behavior parity checklist)
 
 - Binary is durably stored **before** any metadata is written; storage down ⇒ 503, no orphans.
-- Ingest pipeline: upload → RECEIVED → queue job → CONVERTING → PDF/A + OCR text →
-  optional AI suggestions → index → READY; terminal FAILED after max attempts;
-  lease-based re-queue of crashed jobs; reprocess is idempotent (deterministic storage keys).
+- Ingest pipeline: upload → RECEIVED → queue job → CONVERTING → OCR text →
+  optional AI suggestions (on that text) → index → READY; terminal FAILED after max
+  attempts; lease-based re-queue of crashed jobs; reprocess is idempotent (deterministic
+  storage keys). No PDF/A rendition — only `ORIGINAL` + `TEXT` (rule 8).
 - AI extraction is optional and degrades gracefully: unconfigured ⇒ `MANUAL_INDEXING`
   flag, errored ⇒ `REVIEW` flag — the document still becomes READY.
 - Authorization: roles ADMIN/EDITOR/VIEWER on org units, inherited down the org-unit
@@ -116,7 +149,23 @@ SONSTIGES), extraction intents with fields. Do not translate these in code or UI
 - Audit log survives user deletion (no FK); every access decision is auditable.
 - Feed tokens are stored hashed; RSS feed authenticates via token query parameter.
 - API error contract, status codes (400/403/404/409/413/415/422/502/503/504) and
-  `/api/v1` paths stay exactly as documented in `docs/ARCHITECTURE.md` §10.
+  `/api/v1` paths stay exactly as documented in `docs/ARCHITECTURE.md` §10 — with one
+  deliberate deviation: 415 fires for **every non-PDF upload** (PDF-only intake,
+  rule 8), not just for types outside the as-is accepted list.
+
+## Build, run & test (COBOL stack)
+
+- Compile locally: `cobc -x -free -I src -o dmsapi src/00HTTPC0.cob …` — the
+  authoritative file lists live in `cobol/Dockerfile` (the CGI binary `dmsapi`, the
+  worker daemon `dmsworker` — linked `-lcurl` — and `dmsboot`).
+- Container: `docker build -f cobol/Dockerfile -t dms-cobol .` (context = repo root),
+  `docker run -p 7860:7860 dms-cobol`; data volume `/data`, VSAM files in `/data/vsam`.
+- Smoke: `scripts/cobol-smoke.sh http://localhost:7860` (full E2E).
+- CI: `.github/workflows/cobol-ci.yml` builds the image, **starts the container**,
+  waits for its healthcheck, smokes it, validates `compose.uat.yml`, and publishes
+  `ghcr.io/<owner>/clouddms/dms-cobol:latest` on main.
+- Run: `docker compose up --build` (app on :7860); UAT: `compose.uat.yml` pulls the
+  published image and runs it on :7860 (the only stack now that Java is decommissioned).
 
 ## Working agreements
 

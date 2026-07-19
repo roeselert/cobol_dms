@@ -1,0 +1,119 @@
+>>SOURCE FORMAT FREE
+*> 60INFDE0 — aiextraction: file access for the INTFIELD indexed file
+*> (extraction intent fields). Ops: BYIN (all fields for an intent ->
+*> table) · WRT · DELI (delete every field of an intent, for catalog
+*> edits). L-RET: 00 · 22 · 9x.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "60INFDE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT INFD-FILE ASSIGN TO "INTFIELD"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS IF-ID
+        ALTERNATE RECORD KEY IS IF-INTENT WITH DUPLICATES
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD INFD-FILE.
+COPY "60INFDR0.cpy" REPLACING ==:PFX:== BY ==IF==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+01 WS-K                 PIC 9(4) COMP.
+01 WS-DEL-ID            PIC X(36) OCCURS 50.
+01 WS-NDEL              PIC 9(4) COMP.
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "60INFDR0.cpy" REPLACING ==:PFX:== BY ==L-IF==.
+01 L-IF-TABLE.
+   05 L-IF-COUNT        PIC 9(4).
+   05 L-IF-ROW OCCURS 30.
+      10 L-IF-ROW-NAME PIC X(100).
+      10 L-IF-ROW-DESC PIC X(300).
+PROCEDURE DIVISION USING L-OP L-RET L-IF-REC L-IF-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "BYIN" PERFORM DO-BY-INTENT
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "DELI" PERFORM DO-DEL-INTENT
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE INFD-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O INFD-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT INFD-FILE
+        CLOSE INFD-FILE
+        OPEN I-O INFD-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-BY-INTENT.
+    MOVE 0 TO L-IF-COUNT
+    MOVE L-IF-INTENT TO IF-INTENT
+    START INFD-FILE KEY IS = IF-INTENT
+    IF WS-FS = "00"
+        PERFORM UNTIL L-IF-COUNT >= 30
+            READ INFD-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            IF IF-INTENT NOT = L-IF-INTENT
+                EXIT PERFORM
+            END-IF
+            ADD 1 TO L-IF-COUNT
+            MOVE IF-NAME TO L-IF-ROW-NAME (L-IF-COUNT)
+            MOVE IF-DESC TO L-IF-ROW-DESC (L-IF-COUNT)
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+
+DO-WRITE.
+    MOVE L-IF-REC TO IF-REC
+    WRITE IF-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-DEL-INTENT.
+    *> collect this intent's field ids, then delete them by primary key
+    MOVE 0 TO WS-NDEL
+    MOVE L-IF-INTENT TO IF-INTENT
+    START INFD-FILE KEY IS = IF-INTENT
+    IF WS-FS = "00"
+        PERFORM UNTIL WS-NDEL >= 50
+            READ INFD-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            IF IF-INTENT NOT = L-IF-INTENT
+                EXIT PERFORM
+            END-IF
+            ADD 1 TO WS-NDEL
+            MOVE IF-ID TO WS-DEL-ID (WS-NDEL)
+        END-PERFORM
+    END-IF
+    PERFORM VARYING WS-K FROM 1 BY 1 UNTIL WS-K > WS-NDEL
+        MOVE WS-DEL-ID (WS-K) TO IF-ID
+        READ INFD-FILE
+        IF WS-FS = "00" OR WS-FS = "02"
+            DELETE INFD-FILE
+        END-IF
+    END-PERFORM
+    MOVE "00" TO L-RET.
+END PROGRAM "60INFDE0".

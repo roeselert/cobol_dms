@@ -1,0 +1,142 @@
+>>SOURCE FORMAT FREE
+*> 60ORDTE0 — aiextraction: file access for the ORDNTYPE indexed file
+*> (Ordnungsbegriff type catalog). Ops: GET by id · NAME by unique name ·
+*> WRT · REW · DEL · ALL (table, sorted by name; active flag carried so
+*> the caller can offer only active types to the model). L-RET: 00·23·22·9x.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "60ORDTE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT ORDT-FILE ASSIGN TO "ORDNTYPE"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS OT-ID
+        ALTERNATE RECORD KEY IS OT-NAME
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD ORDT-FILE.
+COPY "60ORDTR0.cpy" REPLACING ==:PFX:== BY ==OT==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "60ORDTR0.cpy" REPLACING ==:PFX:== BY ==L-OT==.
+01 L-OT-TABLE.
+   05 L-OT-COUNT        PIC 9(4).
+   05 L-OT-ROW OCCURS 50.
+      10 L-OT-ROW-ID     PIC X(36).
+      10 L-OT-ROW-NAME   PIC X(100).
+      10 L-OT-ROW-DESC   PIC X(300).
+      10 L-OT-ROW-ACTIVE PIC X.
+PROCEDURE DIVISION USING L-OP L-RET L-OT-REC L-OT-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "NAME" PERFORM DO-BY-NAME
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "REW " PERFORM DO-REWRITE
+        WHEN "DEL " PERFORM DO-DELETE
+        WHEN "ALL " PERFORM DO-ALL
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE ORDT-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O ORDT-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT ORDT-FILE
+        CLOSE ORDT-FILE
+        OPEN I-O ORDT-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-OT-ID TO OT-ID
+    READ ORDT-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE OT-REC TO L-OT-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-BY-NAME.
+    MOVE L-OT-NAME TO OT-NAME
+    READ ORDT-FILE KEY IS OT-NAME
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE OT-REC TO L-OT-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-WRITE.
+    MOVE L-OT-REC TO OT-REC
+    WRITE OT-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-REWRITE.
+    MOVE L-OT-ID TO OT-ID
+    READ ORDT-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        MOVE L-OT-REC TO OT-REC
+        REWRITE OT-REC
+        IF WS-FS = "00" OR WS-FS = "02"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-DELETE.
+    MOVE L-OT-ID TO OT-ID
+    READ ORDT-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        DELETE ORDT-FILE
+        IF WS-FS = "00"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-ALL.
+    MOVE 0 TO L-OT-COUNT
+    MOVE LOW-VALUES TO OT-NAME
+    START ORDT-FILE KEY IS >= OT-NAME
+    IF WS-FS = "00"
+        PERFORM UNTIL L-OT-COUNT >= 50
+            READ ORDT-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            ADD 1 TO L-OT-COUNT
+            MOVE OT-ID     TO L-OT-ROW-ID (L-OT-COUNT)
+            MOVE OT-NAME   TO L-OT-ROW-NAME (L-OT-COUNT)
+            MOVE OT-DESC   TO L-OT-ROW-DESC (L-OT-COUNT)
+            MOVE OT-ACTIVE TO L-OT-ROW-ACTIVE (L-OT-COUNT)
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+END PROGRAM "60ORDTE0".

@@ -1,0 +1,54 @@
+>>SOURCE FORMAT FREE
+*> 10AUDTE0 — security: append one entry to the AUDITLOG indexed file
+*> (audit_log_entry table). Generates its own id + timestamp. Best
+*> effort: a failed audit write never fails the request (parity with
+*> the as-is system, where the row shares the request transaction).
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "10AUDTE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT AUDIT-FILE ASSIGN TO "AUDITLOG"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS AU-ID
+        ALTERNATE RECORD KEY IS AU-TS WITH DUPLICATES
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD AUDIT-FILE.
+COPY "10AUDTR0.cpy" REPLACING ==:PFX:== BY ==AU==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+01 WS-UUID              PIC X(36).
+01 WS-EPOCH             PIC 9(13).
+LINKAGE SECTION.
+01 L-USER               PIC X(36).
+01 L-ACTION             PIC X(10).
+01 L-RTYPE              PIC X(20).
+01 L-RID                PIC X(36).
+01 L-EFFECT             PIC X(5).
+PROCEDURE DIVISION USING L-USER L-ACTION L-RTYPE L-RID L-EFFECT.
+MAIN.
+    OPEN I-O AUDIT-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT AUDIT-FILE
+        CLOSE AUDIT-FILE
+        OPEN I-O AUDIT-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        GOBACK
+    END-IF
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE WS-UUID   TO AU-ID
+    MOVE L-USER    TO AU-USER
+    MOVE L-ACTION  TO AU-ACTION
+    MOVE L-RTYPE   TO AU-RTYPE
+    MOVE L-RID     TO AU-RID
+    MOVE L-EFFECT  TO AU-EFFECT
+    MOVE WS-EPOCH  TO AU-TS
+    WRITE AU-REC
+    CLOSE AUDIT-FILE
+    GOBACK.
+END PROGRAM "10AUDTE0".

@@ -1,0 +1,145 @@
+>>SOURCE FORMAT FREE
+*> 20ORGSE0 — organization: file access for the ORGUNIT indexed file
+*> (org_unit table). Ops:
+*>   GET  read by id            WRT  write new record
+*>   REW  rewrite               DEL  delete by id
+*>   ALL  load all into table   KID  any child under L-OU-PARENT?
+*> L-RET: 00 ok · 23 not found · 22 duplicate key · 9x file error.
+*> Every call opens and closes the file — CGI processes are one-shot.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "20ORGSE0".
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT ORGUNIT-FILE ASSIGN TO "ORGUNIT"
+        ORGANIZATION IS INDEXED
+        ACCESS MODE IS DYNAMIC
+        RECORD KEY IS OU-ID
+        ALTERNATE RECORD KEY IS OU-PATH
+        ALTERNATE RECORD KEY IS OU-PARENT WITH DUPLICATES
+        LOCK MODE IS AUTOMATIC
+        FILE STATUS IS WS-FS.
+DATA DIVISION.
+FILE SECTION.
+FD ORGUNIT-FILE.
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==OU==.
+WORKING-STORAGE SECTION.
+01 WS-FS                PIC X(2).
+LINKAGE SECTION.
+01 L-OP                 PIC X(4).
+01 L-RET                PIC X(2).
+COPY "20ORGSR0.cpy" REPLACING ==:PFX:== BY ==L-OU==.
+01 L-OU-TABLE.
+   05 L-OU-COUNT        PIC 9(4).
+   05 L-OU-ROW OCCURS 300.
+      10 L-OU-ROW-ID     PIC X(36).
+      10 L-OU-ROW-NAME   PIC X(200).
+      10 L-OU-ROW-PARENT PIC X(36).
+      10 L-OU-ROW-PATH   PIC X(512).
+PROCEDURE DIVISION USING L-OP L-RET L-OU-REC L-OU-TABLE.
+MAIN.
+    PERFORM OPEN-FILE
+    IF L-RET NOT = "00"
+        GOBACK
+    END-IF
+    EVALUATE L-OP
+        WHEN "GET " PERFORM DO-GET
+        WHEN "WRT " PERFORM DO-WRITE
+        WHEN "REW " PERFORM DO-REWRITE
+        WHEN "DEL " PERFORM DO-DELETE
+        WHEN "ALL " PERFORM DO-ALL
+        WHEN "KID " PERFORM DO-HAS-CHILD
+        WHEN OTHER  MOVE "99" TO L-RET
+    END-EVALUATE
+    CLOSE ORGUNIT-FILE
+    GOBACK.
+
+OPEN-FILE.
+    MOVE "00" TO L-RET
+    OPEN I-O ORGUNIT-FILE
+    IF WS-FS = "35"
+        OPEN OUTPUT ORGUNIT-FILE
+        CLOSE ORGUNIT-FILE
+        OPEN I-O ORGUNIT-FILE
+    END-IF
+    IF WS-FS NOT = "00" AND WS-FS NOT = "05"
+        MOVE "91" TO L-RET
+    END-IF.
+
+DO-GET.
+    MOVE L-OU-ID TO OU-ID
+    READ ORGUNIT-FILE
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE OU-REC TO L-OU-REC
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+
+DO-WRITE.
+    MOVE L-OU-REC TO OU-REC
+    WRITE OU-REC
+    EVALUATE WS-FS
+        WHEN "00" MOVE "00" TO L-RET
+        WHEN "02" MOVE "00" TO L-RET
+        WHEN "22" MOVE "22" TO L-RET
+        WHEN OTHER MOVE "92" TO L-RET
+    END-EVALUATE.
+
+DO-REWRITE.
+    MOVE L-OU-ID TO OU-ID
+    READ ORGUNIT-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        MOVE L-OU-REC TO OU-REC
+        REWRITE OU-REC
+        IF WS-FS = "00" OR WS-FS = "02"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-DELETE.
+    MOVE L-OU-ID TO OU-ID
+    READ ORGUNIT-FILE
+    IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+        MOVE "23" TO L-RET
+    ELSE
+        DELETE ORGUNIT-FILE
+        IF WS-FS = "00"
+            MOVE "00" TO L-RET
+        ELSE
+            MOVE "92" TO L-RET
+        END-IF
+    END-IF.
+
+DO-ALL.
+    MOVE 0 TO L-OU-COUNT
+    MOVE LOW-VALUES TO OU-ID
+    START ORGUNIT-FILE KEY IS >= OU-ID
+    IF WS-FS = "00"
+        PERFORM UNTIL L-OU-COUNT >= 300
+            READ ORGUNIT-FILE NEXT
+            IF WS-FS NOT = "00" AND WS-FS NOT = "02"
+                EXIT PERFORM
+            END-IF
+            ADD 1 TO L-OU-COUNT
+            MOVE OU-ID     TO L-OU-ROW-ID (L-OU-COUNT)
+            MOVE OU-NAME   TO L-OU-ROW-NAME (L-OU-COUNT)
+            MOVE OU-PARENT TO L-OU-ROW-PARENT (L-OU-COUNT)
+            MOVE OU-PATH   TO L-OU-ROW-PATH (L-OU-COUNT)
+        END-PERFORM
+    END-IF
+    MOVE "00" TO L-RET.
+
+DO-HAS-CHILD.
+    MOVE L-OU-PARENT TO OU-PARENT
+    READ ORGUNIT-FILE KEY IS OU-PARENT
+    IF WS-FS = "00" OR WS-FS = "02"
+        MOVE "00" TO L-RET
+    ELSE
+        MOVE "23" TO L-RET
+    END-IF.
+END PROGRAM "20ORGSE0".

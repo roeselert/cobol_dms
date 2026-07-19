@@ -1,0 +1,572 @@
+>>SOURCE FORMAT FREE
+*> 30DOCSB0 — documents: REST boundary for /api/v1/documents,
+*> mirroring DocumentsController + DocumentsFacade + Ingestion.
+*>   POST   /v1/documents                multipart upload (EDITOR)
+*>   GET    /v1/documents?page&size      newest-first, ACL-filtered
+*>   GET    /v1/documents/{id}           detail
+*>   GET    /v1/documents/{id}/file?type rendition download (stream)
+*>   POST   /v1/documents/{id}/reprocess re-queue (EDITOR)
+*> PDF-only intake (rule 8 / D-8): every non-PDF upload => 415.
+*> The binary is renamed into the object store BEFORE any record is
+*> written; a storage failure means 503 and no orphans (R-1).
+IDENTIFICATION DIVISION.
+PROGRAM-ID. "30DOCSB0".
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-OP                PIC X(4).
+01 WS-RET               PIC X(2).
+COPY "30DOCSR0.cpy" REPLACING ==:PFX:== BY ==WS-DC==.
+01 WS-DC-TABLE.
+   05 WS-DC-COUNT       PIC 9(4).
+   05 WS-DC-ROW OCCURS 300.
+      10 WS-DC-ROW-ID       PIC X(36).
+      10 WS-DC-ROW-NAME     PIC X(255).
+      10 WS-DC-ROW-UPLOADER PIC X(36).
+      10 WS-DC-ROW-ORG      PIC X(36).
+      10 WS-DC-ROW-INGEST   PIC 9(13).
+COPY "30STATR0.cpy" REPLACING ==:PFX:== BY ==WS-DS==.
+COPY "30RENDR0.cpy" REPLACING ==:PFX:== BY ==WS-RD==.
+01 WS-RD-TABLE.
+   05 WS-RD-COUNT       PIC 9(4).
+   05 WS-RD-ROW OCCURS 10.
+      10 WS-RD-ROW-TYPE     PIC X(10).
+      10 WS-RD-ROW-MIME     PIC X(100).
+      10 WS-RD-ROW-SIZE     PIC 9(13).
+      10 WS-RD-ROW-SHA256   PIC X(64).
+      10 WS-RD-ROW-PRODUCER PIC X(15).
+COPY "50JOBSR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
+*> 50JOBSE0's 4th arg (unused by the WRT/RSET ops called here)
+COPY "50JCTLR0.cpy" REPLACING ==:PFX:== BY ==WS-JB==.
+*> object store interface
+01 WS-S-OP              PIC X(4).
+01 WS-S-RET             PIC X(2).
+01 WS-S-KEY             PIC X(200).
+01 WS-S-SRC             PIC X(512).
+01 WS-S-PATH            PIC X(512).
+*> authorization interface
+01 WS-A-USER            PIC X(36).
+01 WS-A-ADMIN           PIC X.
+01 WS-A-ORG             PIC X(36).
+01 WS-A-RID             PIC X(36).
+01 WS-A-NEEDED          PIC X.
+01 WS-A-ACTION          PIC X(10).
+01 WS-A-RTYPE           PIC X(20).
+01 WS-A-AUDIT           PIC X.
+01 WS-A-RESULT          PIC X.
+*> helpers
+01 WS-UUID              PIC X(36).
+01 WS-EPOCH             PIC 9(13).
+01 WS-ISO               PIC X(20).
+01 WS-ESC-IN            PIC X(512).
+01 WS-ESC-OUT           PIC X(1024).
+01 WS-ESC-LEN           PIC 9(4).
+01 WS-PTR               PIC 9(6) COMP.
+01 WS-FIRST             PIC X.
+01 WS-I                 PIC 9(4) COMP.
+01 WS-J                 PIC 9(4) COMP.
+01 WS-QP-WANT           PIC X(32).
+01 WS-QP-VAL            PIC X(64).
+01 WS-PAGE              PIC S9(6) COMP.
+01 WS-SIZE              PIC S9(6) COMP.
+01 WS-OFFSET            PIC 9(6) COMP.
+01 WS-EMITTED           PIC 9(6) COMP.
+01 WS-SKIPPED           PIC 9(6) COMP.
+01 WS-MAXUP-X           PIC X(16).
+01 WS-MAXUP             PIC 9(10) COMP.
+01 WS-ORGUNIT           PIC X(200).
+01 WS-FILENAME          PIC X(255).
+01 WS-MIME              PIC X(100).
+01 WS-MIME-LOW          PIC X(100).
+01 WS-FNAME-LOW         PIC X(255).
+01 WS-FLEN              PIC 9(4) COMP.
+01 WS-TYPE-PARAM        PIC X(10).
+01 WS-SIZE-Z            PIC Z(12)9.
+01 WS-HDR               PIC X(1200).
+01 WS-HDRLEN            USAGE BINARY-C-LONG.
+01 WS-WROTE             USAGE BINARY-C-LONG.
+01 WS-LF                PIC X VALUE X"0A".
+01 WS-CMD               PIC X(700).
+01 WS-RC                USAGE BINARY-LONG.
+01 WS-SAFE-NAME         PIC X(255).
+LINKAGE SECTION.
+COPY "00HTTPR0.cpy".
+PROCEDURE DIVISION USING HTTP-EXCHANGE.
+MAIN.
+    EVALUATE TRUE
+        WHEN HX-METHOD = "POST" AND HX-SEG (3) = SPACES
+            PERFORM DO-UPLOAD
+        WHEN HX-METHOD = "GET" AND HX-SEG (3) = SPACES
+            PERFORM DO-LIST
+        WHEN HX-METHOD = "GET" AND HX-SEG (3) NOT = SPACES
+                AND HX-SEG (4) = SPACES
+            PERFORM DO-GET
+        WHEN HX-METHOD = "GET" AND HX-SEG (4) = "file"
+            PERFORM DO-FILE
+        WHEN HX-METHOD = "POST" AND HX-SEG (4) = "reprocess"
+            PERFORM DO-REPROCESS
+        WHEN OTHER
+            MOVE 405 TO HX-STATUS
+            MOVE '{"error":"method not allowed"}' TO HX-RESPONSE
+    END-EVALUATE
+    GOBACK.
+
+DO-UPLOAD.
+    IF HX-UP-PRESENT NOT = "Y"
+        MOVE 400 TO HX-STATUS
+        MOVE '{"error":"file is required"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-ORGUNIT
+    PERFORM FIND-ORGUNIT-FIELD
+    IF WS-ORGUNIT = SPACES
+        MOVE 400 TO HX-STATUS
+        MOVE '{"error":"orgUnitId is required"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE WS-UUID TO WS-DC-ID
+    *> authorize FIRST (EDITOR on the target unit), before storing
+    MOVE WS-ORGUNIT (1 : 36) TO WS-A-ORG
+    MOVE WS-DC-ID TO WS-A-RID
+    MOVE "E" TO WS-A-NEEDED
+    MOVE "WRITE" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM RESOLVE-PDF-MIME
+    IF HX-STATUS = 415
+        EXIT PARAGRAPH
+    END-IF
+    IF HX-UP-SIZE = 0
+        MOVE 422 TO HX-STATUS
+        MOVE '{"error":"file is empty"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    PERFORM MAX-UPLOAD-BYTES
+    IF HX-UP-SIZE > WS-MAXUP
+        MOVE 413 TO HX-STATUS
+        MOVE '{"error":"upload too large"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    *> binary durably stored BEFORE any metadata (R-1)
+    MOVE SPACES TO WS-S-KEY
+    STRING "originals/" FUNCTION TRIM (WS-DC-ID) "/original"
+        DELIMITED BY SIZE INTO WS-S-KEY
+    END-STRING
+    MOVE HX-UP-PATH TO WS-S-SRC
+    MOVE "PUTF" TO WS-S-OP
+    CALL "00STORC0" USING WS-S-OP WS-S-RET WS-S-KEY WS-S-SRC
+        WS-S-PATH
+    IF WS-S-RET NOT = "00"
+        MOVE 503 TO HX-STATUS
+        MOVE '{"error":"storage unavailable"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE HX-UP-FILENAME TO WS-FILENAME
+    IF FUNCTION TRIM (WS-FILENAME) = SPACES
+        MOVE "upload" TO WS-FILENAME
+    END-IF
+    *> DOCUMENT + RECEIVED status + ORIGINAL rendition + QUEUED job
+    MOVE WS-FILENAME TO WS-DC-NAME
+    MOVE HX-USER-ID TO WS-DC-UPLOADER
+    MOVE WS-ORGUNIT (1 : 36) TO WS-DC-ORG
+    MOVE WS-EPOCH TO WS-DC-INGEST
+    MOVE WS-EPOCH TO WS-DC-CREATED
+    MOVE "WRT " TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    MOVE SPACES TO WS-DS-REC
+    MOVE WS-DC-ID TO WS-DS-DOC
+    MOVE "RECEIVED" TO WS-DS-STATUS
+    MOVE WS-EPOCH TO WS-DS-UPDATED
+    MOVE WS-EPOCH TO WS-DS-CREATED
+    MOVE "WRT " TO WS-OP
+    CALL "30STATE0" USING WS-OP WS-RET WS-DS-REC
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE SPACES TO WS-RD-REC
+    MOVE WS-UUID TO WS-RD-ID
+    MOVE WS-DC-ID TO WS-RD-DOC
+    MOVE "ORIGINAL" TO WS-RD-TYPE
+    MOVE WS-S-KEY TO WS-RD-KEY
+    MOVE "application/pdf" TO WS-RD-MIME
+    MOVE HX-UP-SIZE TO WS-RD-SIZE
+    MOVE HX-UP-SHA256 TO WS-RD-SHA256
+    MOVE WS-EPOCH TO WS-RD-CREATED
+    MOVE "upload" TO WS-RD-PRODUCER
+    MOVE "WRT " TO WS-OP
+    CALL "30RENDE0" USING WS-OP WS-RET WS-RD-REC WS-RD-TABLE
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE SPACES TO WS-JB-REC
+    MOVE WS-UUID TO WS-JB-ID
+    MOVE WS-DC-ID TO WS-JB-DOC
+    MOVE "QUEUED" TO WS-JB-STATUS
+    MOVE 0 TO WS-JB-ATTEMPTS
+    MOVE WS-EPOCH TO WS-JB-AVAILABLE
+    MOVE 0 TO WS-JB-LEASE
+    MOVE WS-EPOCH TO WS-JB-CREATED
+    MOVE "WRT " TO WS-OP
+    CALL "50JOBSE0" USING WS-OP WS-RET WS-JB-REC WS-JB-CTL
+    MOVE 201 TO HX-STATUS
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    PERFORM EMIT-DOC-DTO.
+
+FIND-ORGUNIT-FIELD.
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > HX-FF-COUNT
+        IF HX-FF-NAME (WS-I) = "orgUnitId"
+            MOVE HX-FF-VALUE (WS-I) TO WS-ORGUNIT
+        END-IF
+    END-PERFORM.
+
+RESOLVE-PDF-MIME.
+    *> PDF-only intake: declared type application/pdf or a .pdf name
+    MOVE FUNCTION LOWER-CASE (HX-UP-MIME) TO WS-MIME-LOW
+    MOVE FUNCTION LOWER-CASE (HX-UP-FILENAME) TO WS-FNAME-LOW
+    MOVE FUNCTION STORED-CHAR-LENGTH (WS-FNAME-LOW) TO WS-FLEN
+    IF WS-MIME-LOW (1 : 15) = "application/pdf"
+        MOVE "application/pdf" TO WS-MIME
+        EXIT PARAGRAPH
+    END-IF
+    IF WS-FLEN > 4
+        AND WS-FNAME-LOW (WS-FLEN - 3 : 4) = ".pdf"
+        MOVE "application/pdf" TO WS-MIME
+        EXIT PARAGRAPH
+    END-IF
+    MOVE 415 TO HX-STATUS
+    MOVE SPACES TO HX-RESPONSE
+    IF FUNCTION TRIM (HX-UP-MIME) NOT = SPACES
+        MOVE HX-UP-MIME (1 : 100) TO WS-ESC-IN
+    ELSE
+        MOVE HX-UP-FILENAME (1 : 255) TO WS-ESC-IN
+    END-IF
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"error":"unsupported media type: '
+           WS-ESC-OUT (1 : WS-ESC-LEN) '"}'
+        DELIMITED BY SIZE INTO HX-RESPONSE
+    END-STRING.
+
+MAX-UPLOAD-BYTES.
+    ACCEPT WS-MAXUP-X FROM ENVIRONMENT "DMS_UPLOAD_MAX_BYTES"
+        ON EXCEPTION MOVE SPACES TO WS-MAXUP-X
+    END-ACCEPT
+    COMPUTE WS-MAXUP = FUNCTION NUMVAL (WS-MAXUP-X)
+    IF WS-MAXUP = 0
+        MOVE 104857600 TO WS-MAXUP
+    END-IF.
+
+DO-LIST.
+    PERFORM READ-PAGING
+    MOVE "ALLD" TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    STRING "[" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE "Y" TO WS-FIRST
+    MOVE 0 TO WS-EMITTED
+    MOVE 0 TO WS-SKIPPED
+    PERFORM VARYING WS-I FROM 1 BY 1 UNTIL WS-I > WS-DC-COUNT
+            OR WS-EMITTED >= WS-SIZE
+        PERFORM CHECK-VISIBLE
+        IF WS-A-RESULT = "A"
+            IF WS-SKIPPED < WS-OFFSET
+                ADD 1 TO WS-SKIPPED
+            ELSE
+                MOVE SPACES TO WS-DC-REC
+                MOVE WS-DC-ROW-ID (WS-I) TO WS-DC-ID
+                MOVE "GET " TO WS-OP
+                CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC
+                                      WS-DC-TABLE
+                IF WS-RET = "00"
+                    IF WS-FIRST = "N"
+                        STRING "," DELIMITED BY SIZE
+                            INTO HX-RESPONSE WITH POINTER WS-PTR
+                        END-STRING
+                    END-IF
+                    MOVE "N" TO WS-FIRST
+                    PERFORM EMIT-DOC-DTO
+                    ADD 1 TO WS-EMITTED
+                END-IF
+            END-IF
+        END-IF
+    END-PERFORM
+    STRING "]" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    MOVE 200 TO HX-STATUS.
+
+READ-PAGING.
+    MOVE "page" TO WS-QP-WANT
+    PERFORM FIND-QP
+    COMPUTE WS-PAGE = FUNCTION NUMVAL (WS-QP-VAL)
+    IF WS-QP-VAL = SPACES
+        MOVE 0 TO WS-PAGE
+    END-IF
+    IF WS-PAGE < 0
+        MOVE 0 TO WS-PAGE
+    END-IF
+    MOVE "size" TO WS-QP-WANT
+    PERFORM FIND-QP
+    COMPUTE WS-SIZE = FUNCTION NUMVAL (WS-QP-VAL)
+    IF WS-QP-VAL = SPACES
+        MOVE 20 TO WS-SIZE
+    END-IF
+    IF WS-SIZE < 1
+        MOVE 1 TO WS-SIZE
+    END-IF
+    IF WS-SIZE > 100
+        MOVE 100 TO WS-SIZE
+    END-IF
+    COMPUTE WS-OFFSET = WS-PAGE * WS-SIZE.
+
+FIND-QP.
+    MOVE SPACES TO WS-QP-VAL
+    PERFORM VARYING WS-J FROM 1 BY 1 UNTIL WS-J > HX-QP-COUNT
+        IF HX-QP-NAME (WS-J) = WS-QP-WANT
+            MOVE HX-QP-VALUE (WS-J) TO WS-QP-VAL
+        END-IF
+    END-PERFORM.
+
+CHECK-VISIBLE.
+    IF HX-USER-ADMIN = "Y"
+        MOVE "A" TO WS-A-RESULT
+    ELSE
+        MOVE HX-USER-ID TO WS-A-USER
+        MOVE HX-USER-ADMIN TO WS-A-ADMIN
+        MOVE WS-DC-ROW-ORG (WS-I) TO WS-A-ORG
+        MOVE WS-DC-ROW-ID (WS-I) TO WS-A-RID
+        MOVE "V" TO WS-A-NEEDED
+        MOVE "READ" TO WS-A-ACTION
+        MOVE "DOCUMENT" TO WS-A-RTYPE
+        MOVE "N" TO WS-A-AUDIT
+        CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG
+            WS-A-RID WS-A-NEEDED WS-A-ACTION WS-A-RTYPE
+            WS-A-AUDIT WS-A-RESULT
+    END-IF.
+
+DO-GET.
+    PERFORM LOAD-AND-AUTH-READ
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    MOVE 200 TO HX-STATUS
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    PERFORM EMIT-DOC-DTO.
+
+LOAD-AND-AUTH-READ.
+    MOVE "N" TO WS-A-RESULT
+    MOVE SPACES TO WS-DC-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-DC-ID
+    MOVE "GET " TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    IF WS-RET NOT = "00"
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE WS-DC-ORG TO WS-A-ORG
+    MOVE WS-DC-ID TO WS-A-RID
+    MOVE "V" TO WS-A-NEEDED
+    MOVE "READ" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH.
+
+DO-FILE.
+    PERFORM LOAD-AND-AUTH-READ
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    MOVE "type" TO WS-QP-WANT
+    PERFORM FIND-QP
+    *> default PDF_A kept as a legacy alias for frontend compatibility;
+    *> OCR-only conversion (D-9) produces no PDF_A rendition, so the
+    *> selection below falls back to ORIGINAL. Valid types: ORIGINAL,
+    *> TEXT (PDF_A accepted but always resolves to ORIGINAL).
+    IF WS-QP-VAL = SPACES
+        MOVE "PDF_A" TO WS-TYPE-PARAM
+    ELSE
+        MOVE WS-QP-VAL (1 : 10) TO WS-TYPE-PARAM
+    END-IF
+    IF WS-TYPE-PARAM NOT = "ORIGINAL" AND WS-TYPE-PARAM NOT = "PDF_A"
+            AND WS-TYPE-PARAM NOT = "TEXT"
+        MOVE 400 TO HX-STATUS
+        MOVE '{"error":"unknown rendition type"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE SPACES TO WS-RD-REC
+    MOVE WS-DC-ID TO WS-RD-DOC
+    MOVE WS-TYPE-PARAM TO WS-RD-TYPE
+    MOVE "GETD" TO WS-OP
+    CALL "30RENDE0" USING WS-OP WS-RET WS-RD-REC WS-RD-TABLE
+    IF WS-RET NOT = "00"
+        *> fall back to the original binary
+        MOVE SPACES TO WS-RD-REC
+        MOVE WS-DC-ID TO WS-RD-DOC
+        MOVE "ORIGINAL" TO WS-RD-TYPE
+        CALL "30RENDE0" USING WS-OP WS-RET WS-RD-REC WS-RD-TABLE
+        IF WS-RET NOT = "00"
+            MOVE 404 TO HX-STATUS
+            MOVE '{"error":"not found"}' TO HX-RESPONSE
+            EXIT PARAGRAPH
+        END-IF
+    END-IF
+    MOVE WS-RD-KEY TO WS-S-KEY
+    MOVE "EXIS" TO WS-S-OP
+    CALL "00STORC0" USING WS-S-OP WS-S-RET WS-S-KEY WS-S-SRC
+        WS-S-PATH
+    IF WS-S-RET NOT = "00"
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    *> raw emission: headers via write(2), body via cat (both direct
+    *> fd 1 writes, so ordering is deterministic)
+    MOVE WS-DC-NAME TO WS-SAFE-NAME
+    INSPECT WS-SAFE-NAME REPLACING ALL '"' BY "_"
+    MOVE WS-RD-SIZE TO WS-SIZE-Z
+    MOVE 1 TO WS-PTR
+    STRING "Status: 200" WS-LF
+           "Content-Type: " FUNCTION TRIM (WS-RD-MIME) WS-LF
+           "Content-Length: " FUNCTION TRIM (WS-SIZE-Z) WS-LF
+           'Content-Disposition: inline; filename="'
+           FUNCTION TRIM (WS-SAFE-NAME) '"' WS-LF WS-LF
+        DELIMITED BY SIZE INTO WS-HDR WITH POINTER WS-PTR
+    END-STRING
+    COMPUTE WS-HDRLEN = WS-PTR - 1
+    CALL "write" USING
+        BY VALUE 1
+        BY REFERENCE WS-HDR (1 : WS-PTR - 1)
+        BY VALUE WS-HDRLEN
+        RETURNING WS-WROTE
+    END-CALL
+    MOVE SPACES TO WS-CMD
+    STRING "cat '" FUNCTION TRIM (WS-S-PATH) "'"
+        DELIMITED BY SIZE INTO WS-CMD
+    END-STRING
+    CALL "SYSTEM" USING WS-CMD RETURNING WS-RC
+    MOVE "Y" TO HX-EMITTED
+    MOVE 200 TO HX-STATUS.
+
+DO-REPROCESS.
+    MOVE "N" TO WS-A-RESULT
+    MOVE SPACES TO WS-DC-REC
+    MOVE HX-SEG (3) (1 : 36) TO WS-DC-ID
+    MOVE "GET " TO WS-OP
+    CALL "30DOCSE0" USING WS-OP WS-RET WS-DC-REC WS-DC-TABLE
+    IF WS-RET NOT = "00"
+        MOVE 404 TO HX-STATUS
+        MOVE '{"error":"not found"}' TO HX-RESPONSE
+        EXIT PARAGRAPH
+    END-IF
+    MOVE WS-DC-ORG TO WS-A-ORG
+    MOVE WS-DC-ID TO WS-A-RID
+    MOVE "E" TO WS-A-NEEDED
+    MOVE "WRITE" TO WS-A-ACTION
+    PERFORM REQUIRE-AUTH
+    IF WS-A-RESULT NOT = "A"
+        EXIT PARAGRAPH
+    END-IF
+    CALL "00UUIDC0" USING WS-UUID WS-EPOCH
+    MOVE SPACES TO WS-DS-REC
+    MOVE WS-DC-ID TO WS-DS-DOC
+    MOVE "GET " TO WS-OP
+    CALL "30STATE0" USING WS-OP WS-RET WS-DS-REC
+    IF WS-RET = "00"
+        MOVE "RECEIVED" TO WS-DS-STATUS
+        MOVE HX-USER-ID TO WS-DS-CHANGED-BY
+        MOVE WS-EPOCH TO WS-DS-UPDATED
+        MOVE "REW " TO WS-OP
+        CALL "30STATE0" USING WS-OP WS-RET WS-DS-REC
+    END-IF
+    *> one job per document: reset in place, else enqueue fresh
+    MOVE SPACES TO WS-JB-REC
+    MOVE WS-DC-ID TO WS-JB-DOC
+    MOVE WS-EPOCH TO WS-JB-AVAILABLE
+    MOVE "RSET" TO WS-OP
+    CALL "50JOBSE0" USING WS-OP WS-RET WS-JB-REC WS-JB-CTL
+    IF WS-RET = "23"
+        MOVE SPACES TO WS-JB-REC
+        MOVE WS-UUID TO WS-JB-ID
+        MOVE WS-DC-ID TO WS-JB-DOC
+        MOVE "QUEUED" TO WS-JB-STATUS
+        MOVE 0 TO WS-JB-ATTEMPTS
+        MOVE WS-EPOCH TO WS-JB-AVAILABLE
+        MOVE 0 TO WS-JB-LEASE
+        MOVE WS-EPOCH TO WS-JB-CREATED
+        MOVE "WRT " TO WS-OP
+        CALL "50JOBSE0" USING WS-OP WS-RET WS-JB-REC WS-JB-CTL
+    END-IF
+    MOVE 200 TO HX-STATUS
+    MOVE 1 TO WS-PTR
+    MOVE SPACES TO HX-RESPONSE
+    PERFORM EMIT-DOC-DTO.
+
+REQUIRE-AUTH.
+    MOVE HX-USER-ID TO WS-A-USER
+    MOVE HX-USER-ADMIN TO WS-A-ADMIN
+    MOVE "DOCUMENT" TO WS-A-RTYPE
+    MOVE "Y" TO WS-A-AUDIT
+    CALL "10AUTHC0" USING WS-A-USER WS-A-ADMIN WS-A-ORG WS-A-RID
+        WS-A-NEEDED WS-A-ACTION WS-A-RTYPE WS-A-AUDIT WS-A-RESULT
+    EVALUATE WS-A-RESULT
+        WHEN "N"
+            MOVE 404 TO HX-STATUS
+            MOVE '{"error":"not found"}' TO HX-RESPONSE
+        WHEN "F"
+            MOVE 403 TO HX-STATUS
+            MOVE SPACES TO HX-RESPONSE
+            STRING '{"error":"insufficient role for '
+                   FUNCTION TRIM (WS-A-ACTION) '"}'
+                DELIMITED BY SIZE INTO HX-RESPONSE
+            END-STRING
+        WHEN OTHER
+            CONTINUE
+    END-EVALUATE.
+
+EMIT-DOC-DTO.
+    *> DocumentDto for the record currently in WS-DC-REC; appends at
+    *> WS-PTR into HX-RESPONSE
+    MOVE SPACES TO WS-DS-REC
+    MOVE WS-DC-ID TO WS-DS-DOC
+    MOVE "GET " TO WS-OP
+    CALL "30STATE0" USING WS-OP WS-RET WS-DS-REC
+    IF WS-RET NOT = "00"
+        MOVE "RECEIVED" TO WS-DS-STATUS
+    END-IF
+    MOVE SPACES TO WS-RD-REC
+    MOVE WS-DC-ID TO WS-RD-DOC
+    MOVE "BYDC" TO WS-OP
+    CALL "30RENDE0" USING WS-OP WS-RET WS-RD-REC WS-RD-TABLE
+    CALL "00TIMEC0" USING WS-DC-INGEST WS-ISO
+    MOVE WS-DC-NAME (1 : 255) TO WS-ESC-IN
+    CALL "00JSONC1" USING WS-ESC-IN WS-ESC-OUT WS-ESC-LEN
+    STRING '{"id":"' FUNCTION TRIM (WS-DC-ID)
+           '","name":"' WS-ESC-OUT (1 : WS-ESC-LEN)
+           '","orgUnitId":"' FUNCTION TRIM (WS-DC-ORG)
+           '","status":"' FUNCTION TRIM (WS-DS-STATUS)
+           '","ingestDate":"' FUNCTION TRIM (WS-ISO)
+           '","renditions":['
+        DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING
+    PERFORM VARYING WS-J FROM 1 BY 1 UNTIL WS-J > WS-RD-COUNT
+        IF WS-J > 1
+            STRING "," DELIMITED BY SIZE
+                INTO HX-RESPONSE WITH POINTER WS-PTR
+            END-STRING
+        END-IF
+        MOVE WS-RD-ROW-SIZE (WS-J) TO WS-SIZE-Z
+        STRING '{"type":"' FUNCTION TRIM (WS-RD-ROW-TYPE (WS-J))
+               '","mimeType":"' FUNCTION TRIM (WS-RD-ROW-MIME (WS-J))
+               '","sizeBytes":' FUNCTION TRIM (WS-SIZE-Z)
+               ',"checksumSha256":"'
+               FUNCTION TRIM (WS-RD-ROW-SHA256 (WS-J))
+               '","producer":"'
+               FUNCTION TRIM (WS-RD-ROW-PRODUCER (WS-J)) '"}'
+            DELIMITED BY SIZE INTO HX-RESPONSE WITH POINTER WS-PTR
+        END-STRING
+    END-PERFORM
+    STRING "]}" DELIMITED BY SIZE
+        INTO HX-RESPONSE WITH POINTER WS-PTR
+    END-STRING.
+END PROGRAM "30DOCSB0".
