@@ -93,10 +93,12 @@ curl -sSf -X POST "${H_ADMIN[@]}" "${JSON[@]}" \
   -d '{"email":"editor@example.com","role":"EDITOR"}' \
   "$BASE/api/v1/orgs/$DOCS_ORG/members" >/dev/null
 
-# upload a real PDF (editor) -> 201, RECEIVED, ORIGINAL rendition
+# upload a real PDF (editor) -> 201, RECEIVED, ORIGINAL rendition.
+# orgUnitId travels as a query parameter, exactly as the frontend sends it
+# (only `file` is in the multipart body).
 DOC_ID=$(curl -sSf -X POST "${H_EDITOR[@]}" \
   -F "file=@$PDF;type=application/pdf;filename=rechnung.pdf" \
-  -F "orgUnitId=$DOCS_ORG" "$BASE/api/v1/documents" | jq -r .id)
+  "$BASE/api/v1/documents?orgUnitId=$DOCS_ORG" | jq -r .id)
 echo "document: $DOC_ID"
 [ -n "$DOC_ID" ] && [ "$DOC_ID" != "null" ]
 DOC_JSON=$(curl -sSf "${H_EDITOR[@]}" "$BASE/api/v1/documents/$DOC_ID")
