@@ -139,14 +139,21 @@ LINKAGE SECTION.
 PROCEDURE DIVISION USING L-DOC-ID L-FILENAME L-OUTCOME.
 MAIN.
     MOVE "K" TO L-OUTCOME
+    DISPLAY "60EXTRC0: AI extraction requested for document "
+        FUNCTION TRIM (L-DOC-ID)
     PERFORM CHECK-CONFIG
     IF WS-CONFIGURED = "N"
+        DISPLAY "60EXTRC0: " FUNCTION TRIM (L-DOC-ID)
+            " skipped — AI unconfigured (no DMS_AI_TOKEN) -> "
+            "MANUAL_INDEXING"
         MOVE "MANUAL_INDEXING" TO WS-FLAG
         PERFORM FLAG-FOR-INDEXING
         GOBACK
     END-IF
     PERFORM READ-TEXT
     IF WS-TEXTLEN = 0
+        DISPLAY "60EXTRC0: " FUNCTION TRIM (L-DOC-ID)
+            " skipped — no OCR text -> MANUAL_INDEXING"
         MOVE "MANUAL_INDEXING" TO WS-FLAG
         PERFORM FLAG-FOR-INDEXING
         GOBACK
@@ -154,9 +161,16 @@ MAIN.
     PERFORM LOAD-CATALOGS
     PERFORM BUILD-PROMPT
     PERFORM BUILD-BODY
+    DISPLAY "60EXTRC0: calling " FUNCTION TRIM (WS-AI-URL)
+        "/chat/completions model " FUNCTION TRIM (WS-AI-MODEL)
+        " for " FUNCTION TRIM (L-DOC-ID)
+        " (" WS-TEXTLEN " text bytes, " WS-BODYLEN " body bytes)"
     CALL "60CURLC0" USING WS-AI-URL WS-AI-TOKEN WS-BODY WS-BODYLEN
         WS-RESP WS-RESPLEN WS-STATUS WS-CRET
     IF WS-CRET NOT = "00"
+        DISPLAY "60EXTRC0: " FUNCTION TRIM (L-DOC-ID)
+            " AI call FAILED (curl ret=" WS-CRET
+            " http=" WS-STATUS ") -> REVIEW"
         MOVE "REVIEW" TO WS-FLAG
         PERFORM FLAG-FOR-INDEXING
         MOVE "F" TO L-OUTCOME
@@ -164,6 +178,8 @@ MAIN.
     END-IF
     PERFORM EXTRACT-CONTENT
     IF WS-ANSWER-LEN = 0
+        DISPLAY "60EXTRC0: " FUNCTION TRIM (L-DOC-ID)
+            " unusable AI response (http=" WS-STATUS ") -> REVIEW"
         MOVE "REVIEW" TO WS-FLAG
         PERFORM FLAG-FOR-INDEXING
         MOVE "F" TO L-OUTCOME
@@ -171,6 +187,12 @@ MAIN.
     END-IF
     PERFORM PARSE-ANSWER
     PERFORM APPLY-SUGGESTIONS
+    DISPLAY "60EXTRC0: " FUNCTION TRIM (L-DOC-ID)
+        " extraction OK (http=" WS-STATUS
+        " class=" FUNCTION TRIM (WS-NORM-CLASS)
+        " intent=" FUNCTION TRIM (WS-SUG-INTENT)
+        " ordnungsbegriffe=" WS-ORDN-COUNT " flag=" FUNCTION TRIM (WS-FLAG)
+        ")"
     MOVE "S" TO L-OUTCOME
     GOBACK.
 
