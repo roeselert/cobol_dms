@@ -193,7 +193,10 @@ unwritable store ⇒ 503 and no metadata, exactly as today. (S3 dropped, D-2.)
   `MANUAL_INDEXING`; transport/HTTP error or malformed Ordnungsbegriff section ⇒
   `REVIEW`; none found ⇒ `MANUAL_INDEXING`. Retry/backoff is handled once, at the job
   level, by the worker (the resilience4j circuit breaker of decision D-5 is not
-  reproduced — a failed extraction simply degrades that run).
+  reproduced — a failed extraction simply degrades that run). **Every extraction attempt
+  is logged to the worker's stdout** (`60EXTRC0:` — the request URL/model + text/body
+  sizes, and the outcome with HTTP status, detected class/intent/Ordnungsbegriff count
+  or the skip/fail reason), so `docker logs` is the audit trail for AI calls.
 
 ## 7. Frontend: green-screen re-skin — done
 
@@ -212,6 +215,8 @@ is a pure rewrite of `css/app.css` (rule 2 — same views, navigation and REST c
   tables and `100dvh` layout carry over unchanged; `prefers-reduced-motion` disables the
   blink.
 - Served by Apache as static files from the doc root (no Spring static handler).
+- The document modal offers a **Download text** button (alongside Preview/Download/Retry)
+  whenever a `TEXT` rendition exists, streaming `…/file?type=TEXT` as `<name>.txt`.
 - Deferred: restricting the upload picker to `accept="application/pdf"` (a one-line
   markup tweak matching PDF-only intake, D-8) — kept out of this CSS-only pass.
 

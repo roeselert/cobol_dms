@@ -100,6 +100,20 @@ export async function openDocumentModal(documentId, { onSaved } = {}) {
     },
   }, 'Download');
 
+  // OCR text rendition — offered only once conversion has produced it.
+  const hasText = doc.renditions.some((r) => r.type === 'TEXT');
+  const textBtn = hasText ? el('button', {
+    onclick: async () => {
+      try {
+        const url = await api.blobUrl(`/api/v1/documents/${documentId}/file?type=TEXT`);
+        const a = el('a', { href: url, download: `${doc.name.replace(/\.pdf$/i, '')}.txt` });
+        a.click();
+      } catch (e) {
+        toast(`Text download failed: ${e.message}`, 'error');
+      }
+    },
+  }, 'Download text') : null;
+
   // Re-run conversion + AI classification: recovers a FAILED document and
   // re-classifies one whose extraction was skipped or incomplete.
   const retryBtn = el('button', {
@@ -123,7 +137,7 @@ export async function openDocumentModal(documentId, { onSaved } = {}) {
       el('span', { class: 'muted small' }, `ingested ${fmtDate(doc.ingestDate)}`)),
     el('p', { class: 'muted small' },
       `Renditions: ${doc.renditions.map((r) => `${r.type} (${formatBytes(r.sizeBytes)})`).join(' · ') || 'none yet'}`),
-    el('div', { class: 'form-row' }, previewBtn, downloadBtn, retryBtn),
+    el('div', { class: 'form-row' }, previewBtn, downloadBtn, textBtn, retryBtn),
     previewSlot,
     el('h4', {}, 'Metadata'),
     aiHint,
